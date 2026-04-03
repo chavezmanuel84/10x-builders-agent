@@ -6,7 +6,7 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { DbClient } from "@agents/db";
-import type { UserToolSetting, UserIntegration } from "@agents/types";
+import type { UserToolSetting, UserIntegration, PendingConfirmation } from "@agents/types";
 import { createChatModel } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
 import { getSessionMessages, addMessage } from "@agents/db";
@@ -19,6 +19,10 @@ const GraphState = Annotation.Root({
   sessionId: Annotation<string>(),
   userId: Annotation<string>(),
   systemPrompt: Annotation<string>(),
+  pendingConfirmation: Annotation<PendingConfirmation | null>({
+    reducer: (_prev, next) => next,
+    default: () => null,
+  }),
 });
 
 export interface AgentInput {
@@ -29,17 +33,19 @@ export interface AgentInput {
   db: DbClient;
   enabledTools: UserToolSetting[];
   integrations: UserIntegration[];
+  githubToken?: string;
 }
 
 export interface AgentOutput {
   response: string;
   toolCalls: string[];
+  pendingConfirmation: PendingConfirmation | null;
 }
 
 const MAX_TOOL_ITERATIONS = 6;
 
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
-  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations } = input;
+  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations, githubToken } = input;
 
   const model = createChatModel();
   const lcTools = buildLangChainTools({
@@ -48,6 +54,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     sessionId,
     enabledTools,
     integrations,
+    githubToken,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
@@ -80,19 +87,42 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
     const { ToolMessage } = await import("@langchain/core/messages");
     const results: BaseMessage[] = [];
+    let confirmation: PendingConfirmation | null = null;
+
     for (const tc of lastMsg.tool_calls) {
       const matchingTool = lcTools.find((t) => t.name === tc.name);
       toolCallNames.push(tc.name);
       if (matchingTool) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = await (matchingTool as any).invoke(tc.args);
-        results.push(new ToolMessage({ content: String(result), tool_call_id: tc.id! }));
+        const resultStr = String(result);
+        results.push(new ToolMessage({ content: resultStr, tool_call_id: tc.id! }));
+
+        try {
+          const parsed = JSON.parse(resultStr);
+          if (parsed.pending_confirmation) {
+            confirmation = {
+              toolCallId: parsed.tool_call_id,
+              toolName: tc.name,
+              message: parsed.message,
+              args: tc.args,
+            };
+          }
+        } catch {
+          // not JSON — regular tool result
+        }
       }
     }
-    return { messages: results };
+
+    return {
+      messages: results,
+      ...(confirmation ? { pendingConfirmation: confirmation } : {}),
+    };
   }
 
   function shouldContinue(state: typeof GraphState.State): string {
+    if (state.pendingConfirmation) return "end";
+
     const lastMsg = state.messages[state.messages.length - 1];
     if (lastMsg instanceof AIMessage && lastMsg.tool_calls?.length) {
       const iterations = state.messages.filter(
@@ -124,9 +154,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   ];
 
   const finalState = await app.invoke(
-    { messages: initialMessages, sessionId, userId, systemPrompt },
+    { messages: initialMessages, sessionId, userId, systemPrompt, pendingConfirmation: null },
     { configurable: { thread_id: sessionId } }
   );
+
+  const pendingConfirmation: PendingConfirmation | null = finalState.pendingConfirmation ?? null;
 
   const lastMessage = finalState.messages[finalState.messages.length - 1];
   const responseText =
@@ -136,5 +168,5 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   await addMessage(db, sessionId, "assistant", responseText);
 
-  return { response: responseText, toolCalls: toolCallNames };
+  return { response: responseText, toolCalls: toolCallNames, pendingConfirmation };
 }

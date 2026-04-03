@@ -7,11 +7,12 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@agents/db": "*",
+    "@agents/types": "*",
     "@langchain/core": "^0.3",
     "@langchain/langgraph": "^0.2",
     "@langchain/openai": "^0.4",
-    "@agents/db": "*",
-    "@agents/types": "*",
+    "@octokit/rest": "^22.0.1",
     "zod": "^3"
   },
   "devDependencies": {

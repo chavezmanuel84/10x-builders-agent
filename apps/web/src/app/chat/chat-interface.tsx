@@ -8,6 +8,13 @@ interface Message {
   created_at?: string;
 }
 
+interface Confirmation {
+  toolCallId: string;
+  toolName: string;
+  message: string;
+  args: Record<string, unknown>;
+}
+
 interface Props {
   agentName: string;
   initialMessages: Message[];
@@ -17,6 +24,8 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<Confirmation | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -42,20 +51,19 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
 
       const data = await res.json();
 
-      if (data.response) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: data.response },
-        ]);
-      }
-
       if (data.pendingConfirmation) {
+        setPendingConfirm(data.pendingConfirmation);
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: `Se requiere confirmación: ${data.pendingConfirmation.message}\n\n¿Deseas proceder?`,
+            content: data.pendingConfirmation.message,
           },
+        ]);
+      } else if (data.response) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.response },
         ]);
       }
     } catch {
@@ -65,6 +73,51 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
       ]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleConfirm(action: "approve" | "reject") {
+    if (!pendingConfirm) return;
+    setConfirming(true);
+
+    try {
+      const res = await fetch("/api/chat/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toolCallId: pendingConfirm.toolCallId,
+          action,
+        }),
+      });
+      const data = await res.json();
+
+      if (action === "approve" && data.result) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Acción ejecutada: ${JSON.stringify(data.result)}`,
+          },
+        ]);
+      } else if (action === "reject") {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "Acción cancelada." },
+        ]);
+      } else if (data.error) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `Error: ${data.error}` },
+        ]);
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Error al confirmar la acción." },
+      ]);
+    } finally {
+      setPendingConfirm(null);
+      setConfirming(false);
     }
   }
 
@@ -97,6 +150,29 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
               </div>
             </div>
           ))}
+
+          {/* Confirmation buttons */}
+          {pendingConfirm && (
+            <div className="flex justify-start">
+              <div className="flex gap-2 rounded-lg bg-neutral-100 px-4 py-3 dark:bg-neutral-800">
+                <button
+                  onClick={() => handleConfirm("approve")}
+                  disabled={confirming}
+                  className="rounded-md bg-green-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {confirming ? "Ejecutando..." : "Aprobar"}
+                </button>
+                <button
+                  onClick={() => handleConfirm("reject")}
+                  disabled={confirming}
+                  className="rounded-md border border-neutral-300 px-4 py-1.5 text-sm font-medium hover:bg-neutral-200 disabled:opacity-50 dark:border-neutral-600 dark:hover:bg-neutral-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
           {loading && (
             <div className="flex justify-start">
               <div className="rounded-lg bg-neutral-100 px-4 py-2.5 text-sm dark:bg-neutral-800">

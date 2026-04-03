@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@agents/db";
-import { runAgent } from "@agents/agent";
+import { createServerClient, decrypt, updateToolCallStatus } from "@agents/db";
+import { runAgent, executeGitHubTool } from "@agents/agent";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -81,7 +81,47 @@ export async function POST(request: Request) {
         .eq("id", toolCallId)
         .eq("status", "pending_confirmation");
       await answerCallbackQuery(cb.id, "Aprobado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
+
+      const { data: toolCall } = await db
+        .from("tool_calls")
+        .select("*, agent_sessions!inner(user_id)")
+        .eq("id", toolCallId)
+        .single();
+
+      if (toolCall) {
+        const userId = (toolCall.agent_sessions as Record<string, unknown>).user_id as string;
+        const { data: integration } = await db
+          .from("user_integrations")
+          .select("encrypted_tokens")
+          .eq("user_id", userId)
+          .eq("provider", "github")
+          .eq("status", "active")
+          .single();
+
+        if (integration?.encrypted_tokens) {
+          try {
+            const token = decrypt(integration.encrypted_tokens);
+            const result = await executeGitHubTool(
+              toolCall.tool_name,
+              toolCall.arguments_json,
+              token
+            );
+            await updateToolCallStatus(db, toolCallId, "executed", result);
+            await sendTelegramMessage(
+              cb.message.chat.id,
+              `Acción ejecutada: ${JSON.stringify(result)}`
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Error desconocido";
+            await updateToolCallStatus(db, toolCallId, "failed", { error: msg });
+            await sendTelegramMessage(cb.message.chat.id, `Error al ejecutar: ${msg}`);
+          }
+        } else {
+          await sendTelegramMessage(cb.message.chat.id, "GitHub no está conectado.");
+        }
+      } else {
+        await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
+      }
     } else if (action === "reject" && toolCallId) {
       await db
         .from("tool_calls")
@@ -224,6 +264,19 @@ export async function POST(request: Request) {
     .eq("user_id", userId)
     .eq("status", "active");
 
+  // Decrypt GitHub token if available
+  let githubToken: string | undefined;
+  const ghIntegration = (integrations ?? []).find(
+    (i: Record<string, unknown>) => i.provider === "github"
+  );
+  if (ghIntegration && (ghIntegration as Record<string, unknown>).encrypted_tokens) {
+    try {
+      githubToken = decrypt((ghIntegration as Record<string, unknown>).encrypted_tokens as string);
+    } catch {
+      console.error("Failed to decrypt GitHub token for Telegram user", userId);
+    }
+  }
+
   try {
     const result = await runAgent({
       message: text,
@@ -246,22 +299,16 @@ export async function POST(request: Request) {
         status: i.status as "active" | "revoked" | "expired",
         created_at: i.created_at as string,
       })),
+      githubToken,
     });
 
-    // Check if response contains a pending confirmation
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(result.response);
-    } catch {
-      // not JSON, regular text response
-    }
-
-    if (parsed?.pending_confirmation) {
-      await sendTelegramMessage(chatId, String(parsed.message ?? "Se requiere confirmación."), {
+    if (result.pendingConfirmation) {
+      const pc = result.pendingConfirmation;
+      await sendTelegramMessage(chatId, pc.message, {
         inline_keyboard: [
           [
-            { text: "Aprobar", callback_data: `approve:${parsed.tool_call_id}` },
-            { text: "Cancelar", callback_data: `reject:${parsed.tool_call_id}` },
+            { text: "Aprobar", callback_data: `approve:${pc.toolCallId}` },
+            { text: "Cancelar", callback_data: `reject:${pc.toolCallId}` },
           ],
         ],
       });
