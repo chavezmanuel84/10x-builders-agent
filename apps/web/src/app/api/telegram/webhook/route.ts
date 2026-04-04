@@ -111,9 +111,18 @@ export async function POST(request: Request) {
           if (integration?.encrypted_tokens) {
             try {
               const token = decrypt(integration.encrypted_tokens);
-              const result = provider === "github"
-                ? await executeGitHubTool(toolName, toolCall.arguments_json, token)
-                : await executeGoogleCalendarTool(toolName, toolCall.arguments_json, token);
+              let result: Record<string, unknown>;
+              if (provider === "github") {
+                result = await executeGitHubTool(toolName, toolCall.arguments_json, token);
+              } else {
+                const { data: userProfile } = await db
+                  .from("profiles")
+                  .select("timezone")
+                  .eq("id", userId)
+                  .single();
+                const tz = (userProfile?.timezone as string) ?? "UTC";
+                result = await executeGoogleCalendarTool(toolName, toolCall.arguments_json, token, tz);
+              }
               await updateToolCallStatus(db, toolCallId, "executed", result);
               await sendTelegramMessage(
                 cb.message.chat.id,
@@ -258,7 +267,7 @@ export async function POST(request: Request) {
   // Load profile, tools, integrations
   const { data: profile } = await db
     .from("profiles")
-    .select("agent_system_prompt")
+    .select("agent_system_prompt, timezone")
     .eq("id", userId)
     .single();
 
@@ -323,6 +332,7 @@ export async function POST(request: Request) {
       })),
       githubToken,
       googleCalendarToken,
+      userTimezone: (profile?.timezone as string) ?? "UTC",
     });
 
     if (result.pendingConfirmation) {

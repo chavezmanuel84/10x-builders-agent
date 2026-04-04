@@ -35,6 +35,7 @@ export interface AgentInput {
   integrations: UserIntegration[];
   githubToken?: string;
   googleCalendarToken?: string;
+  userTimezone: string;
 }
 
 export interface AgentOutput {
@@ -46,7 +47,7 @@ export interface AgentOutput {
 const MAX_TOOL_ITERATIONS = 6;
 
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
-  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations, githubToken, googleCalendarToken } = input;
+  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations, githubToken, googleCalendarToken, userTimezone } = input;
 
   const model = createChatModel();
   const lcTools = buildLangChainTools({
@@ -57,6 +58,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     integrations,
     githubToken,
     googleCalendarToken,
+    userTimezone,
   });
 
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;

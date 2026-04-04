@@ -88,10 +88,17 @@ export async function POST(request: Request) {
           token
         );
       } else {
+        const { data: userProfile } = await db
+          .from("profiles")
+          .select("timezone")
+          .eq("id", user.id)
+          .single();
+        const tz = (userProfile?.timezone as string) ?? "UTC";
         result = await executeGoogleCalendarTool(
           toolCall.tool_name,
           toolCall.arguments_json,
-          token
+          token,
+          tz
         );
       }
       await updateToolCallStatus(db, toolCallId, "executed", result);

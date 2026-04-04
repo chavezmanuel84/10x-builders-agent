@@ -15,6 +15,37 @@ export interface ToolContext {
   integrations: UserIntegration[];
   githubToken?: string;
   googleCalendarToken?: string;
+  userTimezone: string;
+}
+
+function todayDateStr(tz: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().split("T")[0];
+  }
+}
+
+/** Returns the UTC offset string (e.g. "-05:00", "+05:30") for a given IANA timezone. */
+function tzOffsetStr(tz: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      timeZoneName: "shortOffset",
+    }).formatToParts(new Date());
+    const tzPart = parts.find((p) => p.type === "timeZoneName");
+    if (!tzPart) return "+00:00";
+    const m = tzPart.value.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return "+00:00";
+    return `${m[1]}${m[2].padStart(2, "0")}:${m[3] || "00"}`;
+  } catch {
+    return "+00:00";
+  }
 }
 
 function isToolAvailable(
@@ -91,19 +122,24 @@ function getGoogleCalendarClient(tokenJson: string) {
 export async function executeGoogleCalendarTool(
   toolName: string,
   args: Record<string, unknown>,
-  googleCalendarToken: string
+  googleCalendarToken: string,
+  userTimezone: string = "UTC"
 ): Promise<Record<string, unknown>> {
+  const tz = userTimezone || "UTC";
   const calendar = getGoogleCalendarClient(googleCalendarToken);
 
   switch (toolName) {
     case "gcal_list_events": {
-      const dateStr = (args.date as string) || new Date().toISOString().split("T")[0];
-      const timeMin = new Date(`${dateStr}T00:00:00`).toISOString();
-      const timeMax = new Date(`${dateStr}T23:59:59`).toISOString();
+      const dateStr = (args.date as string) || todayDateStr(tz);
+      const offset = tzOffsetStr(tz);
+      const timeMin = `${dateStr}T00:00:00${offset}`;
+      const timeMax = `${dateStr}T23:59:59${offset}`;
+      console.log(`[gcal] ${toolName}`, { dateStr, tz, offset, timeMin, timeMax });
       const { data } = await calendar.events.list({
         calendarId: "primary",
         timeMin,
         timeMax,
+        timeZone: tz,
         singleEvents: true,
         orderBy: "startTime",
         maxResults: 25,
@@ -120,12 +156,15 @@ export async function executeGoogleCalendarTool(
     case "gcal_query_events": {
       const startDate = args.start_date as string;
       const endDate = args.end_date as string;
-      const timeMin = new Date(`${startDate}T00:00:00`).toISOString();
-      const timeMax = new Date(`${endDate}T23:59:59`).toISOString();
+      const offset = tzOffsetStr(tz);
+      const timeMin = `${startDate}T00:00:00${offset}`;
+      const timeMax = `${endDate}T23:59:59${offset}`;
+      console.log(`[gcal] ${toolName}`, { startDate, endDate, tz, offset, timeMin, timeMax });
       const { data } = await calendar.events.list({
         calendarId: "primary",
         timeMin,
         timeMax,
+        timeZone: tz,
         singleEvents: true,
         orderBy: "startTime",
         maxResults: 50,
@@ -143,13 +182,14 @@ export async function executeGoogleCalendarTool(
       const attendees = (args.attendees as string[] | undefined)?.map(
         (email) => ({ email })
       );
+      console.log(`[gcal] ${toolName}`, { args, tz });
       const { data } = await calendar.events.insert({
         calendarId: "primary",
         requestBody: {
           summary: args.title as string,
           description: (args.description as string) || undefined,
-          start: { dateTime: args.start as string },
-          end: { dateTime: args.end as string },
+          start: { dateTime: args.start as string, timeZone: tz },
+          end: { dateTime: args.end as string, timeZone: tz },
           attendees,
         },
       });
@@ -378,11 +418,12 @@ export function buildLangChainTools(ctx: ToolContext) {
           );
           try {
             const result = await executeGoogleCalendarTool(
-              "gcal_list_events", input, ctx.googleCalendarToken!
+              "gcal_list_events", input, ctx.googleCalendarToken!, ctx.userTimezone
             );
             await updateToolCallStatus(ctx.db, record.id, "executed", result);
             return JSON.stringify(result);
           } catch (err) {
+            console.error("[gcal] gcal_list_events failed:", err);
             const message = err instanceof Error ? err.message : "Unknown error";
             await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
             return JSON.stringify({ error: message });
@@ -391,7 +432,7 @@ export function buildLangChainTools(ctx: ToolContext) {
         {
           name: "gcal_list_events",
           description:
-            "Lists the user's upcoming Google Calendar events for a given day. Defaults to today.",
+            `Lists the user's upcoming Google Calendar events for a given day. Today is ${todayDateStr(ctx.userTimezone)}. Defaults to today if no date is provided.`,
           schema: z.object({
             date: z.string().optional().describe("ISO date (YYYY-MM-DD). Defaults to today."),
           }),
@@ -409,11 +450,12 @@ export function buildLangChainTools(ctx: ToolContext) {
           );
           try {
             const result = await executeGoogleCalendarTool(
-              "gcal_query_events", input, ctx.googleCalendarToken!
+              "gcal_query_events", input, ctx.googleCalendarToken!, ctx.userTimezone
             );
             await updateToolCallStatus(ctx.db, record.id, "executed", result);
             return JSON.stringify(result);
           } catch (err) {
+            console.error("[gcal] gcal_query_events failed:", err);
             const message = err instanceof Error ? err.message : "Unknown error";
             await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
             return JSON.stringify({ error: message });
@@ -451,11 +493,12 @@ export function buildLangChainTools(ctx: ToolContext) {
           }
           try {
             const result = await executeGoogleCalendarTool(
-              "gcal_create_event", input, ctx.googleCalendarToken!
+              "gcal_create_event", input, ctx.googleCalendarToken!, ctx.userTimezone
             );
             await updateToolCallStatus(ctx.db, record.id, "executed", result);
             return JSON.stringify(result);
           } catch (err) {
+            console.error("[gcal] gcal_create_event failed:", err);
             const message = err instanceof Error ? err.message : "Unknown error";
             await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
             return JSON.stringify({ error: message });

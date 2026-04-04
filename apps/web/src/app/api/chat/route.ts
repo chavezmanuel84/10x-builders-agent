@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("agent_system_prompt, agent_name")
+      .select("agent_system_prompt, agent_name, timezone")
       .eq("id", user.id)
       .single();
 
@@ -118,6 +118,7 @@ export async function POST(request: Request) {
       })),
       githubToken,
       googleCalendarToken,
+      userTimezone: (profile?.timezone as string) ?? "UTC",
     });
 
     return NextResponse.json({
