@@ -13,6 +13,7 @@
     "@langchain/langgraph": "^0.2",
     "@langchain/openai": "^0.4",
     "@octokit/rest": "^22.0.1",
+    "googleapis": "^171.4.0",
     "zod": "^3"
   },
   "devDependencies": {

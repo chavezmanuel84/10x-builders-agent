@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
+import { google } from "googleapis";
 import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration } from "@agents/types";
 import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
@@ -13,6 +14,7 @@ export interface ToolContext {
   enabledTools: UserToolSetting[];
   integrations: UserIntegration[];
   githubToken?: string;
+  googleCalendarToken?: string;
 }
 
 function isToolAvailable(
@@ -69,6 +71,98 @@ export async function executeGitHubTool(
     }
     default:
       throw new Error(`Unknown GitHub tool: ${toolName}`);
+  }
+}
+
+function getGoogleCalendarClient(tokenJson: string) {
+  const tokens = JSON.parse(tokenJson);
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials({
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    expiry_date: tokens.expiry_date,
+  });
+  return google.calendar({ version: "v3", auth: oauth2Client });
+}
+
+export async function executeGoogleCalendarTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  googleCalendarToken: string
+): Promise<Record<string, unknown>> {
+  const calendar = getGoogleCalendarClient(googleCalendarToken);
+
+  switch (toolName) {
+    case "gcal_list_events": {
+      const dateStr = (args.date as string) || new Date().toISOString().split("T")[0];
+      const timeMin = new Date(`${dateStr}T00:00:00`).toISOString();
+      const timeMax = new Date(`${dateStr}T23:59:59`).toISOString();
+      const { data } = await calendar.events.list({
+        calendarId: "primary",
+        timeMin,
+        timeMax,
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 25,
+      });
+      const events = (data.items ?? []).map((e) => ({
+        title: e.summary,
+        start: e.start?.dateTime ?? e.start?.date,
+        end: e.end?.dateTime ?? e.end?.date,
+        htmlLink: e.htmlLink,
+        meetLink: e.hangoutLink ?? null,
+      }));
+      return { events, date: dateStr };
+    }
+    case "gcal_query_events": {
+      const startDate = args.start_date as string;
+      const endDate = args.end_date as string;
+      const timeMin = new Date(`${startDate}T00:00:00`).toISOString();
+      const timeMax = new Date(`${endDate}T23:59:59`).toISOString();
+      const { data } = await calendar.events.list({
+        calendarId: "primary",
+        timeMin,
+        timeMax,
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 50,
+      });
+      const events = (data.items ?? []).map((e) => ({
+        title: e.summary,
+        start: e.start?.dateTime ?? e.start?.date,
+        end: e.end?.dateTime ?? e.end?.date,
+        htmlLink: e.htmlLink,
+        meetLink: e.hangoutLink ?? null,
+      }));
+      return { events, start_date: startDate, end_date: endDate };
+    }
+    case "gcal_create_event": {
+      const attendees = (args.attendees as string[] | undefined)?.map(
+        (email) => ({ email })
+      );
+      const { data } = await calendar.events.insert({
+        calendarId: "primary",
+        requestBody: {
+          summary: args.title as string,
+          description: (args.description as string) || undefined,
+          start: { dateTime: args.start as string },
+          end: { dateTime: args.end as string },
+          attendees,
+        },
+      });
+      return {
+        title: data.summary,
+        start: data.start?.dateTime ?? data.start?.date,
+        end: data.end?.dateTime ?? data.end?.date,
+        htmlLink: data.htmlLink,
+        meetLink: data.hangoutLink ?? null,
+      };
+    }
+    default:
+      throw new Error(`Unknown Google Calendar tool: ${toolName}`);
   }
 }
 
@@ -267,6 +361,116 @@ export function buildLangChainTools(ctx: ToolContext) {
             name: z.string(),
             description: z.string().optional().default(""),
             private: z.boolean().optional().default(false),
+          }),
+        }
+      )
+    );
+  }
+
+  // --- Google Calendar tools ---
+
+  if (isToolAvailable("gcal_list_events", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "gcal_list_events", input, false
+          );
+          try {
+            const result = await executeGoogleCalendarTool(
+              "gcal_list_events", input, ctx.googleCalendarToken!
+            );
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "gcal_list_events",
+          description:
+            "Lists the user's upcoming Google Calendar events for a given day. Defaults to today.",
+          schema: z.object({
+            date: z.string().optional().describe("ISO date (YYYY-MM-DD). Defaults to today."),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("gcal_query_events", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "gcal_query_events", input, false
+          );
+          try {
+            const result = await executeGoogleCalendarTool(
+              "gcal_query_events", input, ctx.googleCalendarToken!
+            );
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "gcal_query_events",
+          description: "Queries Google Calendar events within a date range.",
+          schema: z.object({
+            start_date: z.string().describe("Start date (YYYY-MM-DD)"),
+            end_date: z.string().describe("End date (YYYY-MM-DD)"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("gcal_create_event", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const needsConfirm = toolRequiresConfirmation("gcal_create_event");
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "gcal_create_event", input, needsConfirm
+          );
+          if (needsConfirm) {
+            const attendeeInfo = input.attendees?.length
+              ? ` con ${input.attendees.join(", ")}`
+              : "";
+            return JSON.stringify({
+              pending_confirmation: true,
+              tool_call_id: record.id,
+              message: `Crear evento "${input.title}" (${input.start} → ${input.end})${attendeeInfo}`,
+            });
+          }
+          try {
+            const result = await executeGoogleCalendarTool(
+              "gcal_create_event", input, ctx.googleCalendarToken!
+            );
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "gcal_create_event",
+          description:
+            "Creates a new event on the user's Google Calendar. Requires confirmation. Attendees must be specified by email address.",
+          schema: z.object({
+            title: z.string(),
+            start: z.string().describe("Start datetime (ISO 8601)"),
+            end: z.string().describe("End datetime (ISO 8601)"),
+            description: z.string().optional().default(""),
+            attendees: z.array(z.string()).optional().describe("List of attendee email addresses"),
           }),
         }
       )

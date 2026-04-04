@@ -50,6 +50,21 @@ export async function POST(request: Request) {
       }
     }
 
+    // Decrypt Google Calendar token if available
+    let googleCalendarToken: string | undefined;
+    const gcalIntegration = (integrations ?? []).find(
+      (i: Record<string, unknown>) => i.provider === "google_calendar"
+    );
+    if (gcalIntegration && (gcalIntegration as Record<string, unknown>).encrypted_tokens) {
+      try {
+        googleCalendarToken = decrypt(
+          (gcalIntegration as Record<string, unknown>).encrypted_tokens as string
+        );
+      } catch {
+        console.error("Failed to decrypt Google Calendar token for user", user.id);
+      }
+    }
+
     let session = await supabase
       .from("agent_sessions")
       .select("*")
@@ -102,6 +117,7 @@ export async function POST(request: Request) {
         created_at: i.created_at as string,
       })),
       githubToken,
+      googleCalendarToken,
     });
 
     return NextResponse.json({

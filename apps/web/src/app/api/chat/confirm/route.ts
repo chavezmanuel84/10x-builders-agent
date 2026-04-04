@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createServerClient, decrypt, updateToolCallStatus } from "@agents/db";
-import { executeGitHubTool } from "@agents/agent";
+import { executeGitHubTool, executeGoogleCalendarTool } from "@agents/agent";
+
+function getProviderForTool(toolName: string): string | null {
+  if (toolName.startsWith("github_")) return "github";
+  if (toolName.startsWith("gcal_")) return "google_calendar";
+  return null;
+}
 
 export async function POST(request: Request) {
   try {
@@ -45,32 +51,49 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, message: "Acción cancelada." });
     }
 
+    const provider = getProviderForTool(toolCall.tool_name);
+    if (!provider) {
+      await updateToolCallStatus(db, toolCallId, "failed", {
+        error: `Unknown provider for tool: ${toolCall.tool_name}`,
+      });
+      return NextResponse.json({ error: "Unknown tool provider" }, { status: 400 });
+    }
+
     const { data: integration } = await db
       .from("user_integrations")
       .select("encrypted_tokens")
       .eq("user_id", user.id)
-      .eq("provider", "github")
+      .eq("provider", provider)
       .eq("status", "active")
       .single();
 
     if (!integration?.encrypted_tokens) {
       await updateToolCallStatus(db, toolCallId, "failed", {
-        error: "GitHub not connected",
+        error: `${provider} not connected`,
       });
       return NextResponse.json(
-        { error: "GitHub integration not found" },
+        { error: `${provider} integration not found` },
         { status: 400 }
       );
     }
 
-    const githubToken = decrypt(integration.encrypted_tokens);
+    const token = decrypt(integration.encrypted_tokens);
 
     try {
-      const result = await executeGitHubTool(
-        toolCall.tool_name,
-        toolCall.arguments_json,
-        githubToken
-      );
+      let result: Record<string, unknown>;
+      if (provider === "github") {
+        result = await executeGitHubTool(
+          toolCall.tool_name,
+          toolCall.arguments_json,
+          token
+        );
+      } else {
+        result = await executeGoogleCalendarTool(
+          toolCall.tool_name,
+          toolCall.arguments_json,
+          token
+        );
+      }
       await updateToolCallStatus(db, toolCallId, "executed", result);
       return NextResponse.json({ ok: true, result });
     } catch (err) {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerClient, decrypt, updateToolCallStatus } from "@agents/db";
-import { runAgent, executeGitHubTool } from "@agents/agent";
+import { runAgent, executeGitHubTool, executeGoogleCalendarTool } from "@agents/agent";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -90,34 +90,43 @@ export async function POST(request: Request) {
 
       if (toolCall) {
         const userId = (toolCall.agent_sessions as Record<string, unknown>).user_id as string;
-        const { data: integration } = await db
-          .from("user_integrations")
-          .select("encrypted_tokens")
-          .eq("user_id", userId)
-          .eq("provider", "github")
-          .eq("status", "active")
-          .single();
+        const toolName = toolCall.tool_name as string;
+        const provider = toolName.startsWith("github_")
+          ? "github"
+          : toolName.startsWith("gcal_")
+            ? "google_calendar"
+            : null;
 
-        if (integration?.encrypted_tokens) {
-          try {
-            const token = decrypt(integration.encrypted_tokens);
-            const result = await executeGitHubTool(
-              toolCall.tool_name,
-              toolCall.arguments_json,
-              token
-            );
-            await updateToolCallStatus(db, toolCallId, "executed", result);
-            await sendTelegramMessage(
-              cb.message.chat.id,
-              `Acción ejecutada: ${JSON.stringify(result)}`
-            );
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "Error desconocido";
-            await updateToolCallStatus(db, toolCallId, "failed", { error: msg });
-            await sendTelegramMessage(cb.message.chat.id, `Error al ejecutar: ${msg}`);
-          }
+        if (!provider) {
+          await sendTelegramMessage(cb.message.chat.id, "Proveedor desconocido para esta acción.");
         } else {
-          await sendTelegramMessage(cb.message.chat.id, "GitHub no está conectado.");
+          const { data: integration } = await db
+            .from("user_integrations")
+            .select("encrypted_tokens")
+            .eq("user_id", userId)
+            .eq("provider", provider)
+            .eq("status", "active")
+            .single();
+
+          if (integration?.encrypted_tokens) {
+            try {
+              const token = decrypt(integration.encrypted_tokens);
+              const result = provider === "github"
+                ? await executeGitHubTool(toolName, toolCall.arguments_json, token)
+                : await executeGoogleCalendarTool(toolName, toolCall.arguments_json, token);
+              await updateToolCallStatus(db, toolCallId, "executed", result);
+              await sendTelegramMessage(
+                cb.message.chat.id,
+                `Acción ejecutada: ${JSON.stringify(result)}`
+              );
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Error desconocido";
+              await updateToolCallStatus(db, toolCallId, "failed", { error: msg });
+              await sendTelegramMessage(cb.message.chat.id, `Error al ejecutar: ${msg}`);
+            }
+          } else {
+            await sendTelegramMessage(cb.message.chat.id, `${provider} no está conectado.`);
+          }
         }
       } else {
         await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
@@ -277,6 +286,19 @@ export async function POST(request: Request) {
     }
   }
 
+  // Decrypt Google Calendar token if available
+  let googleCalendarToken: string | undefined;
+  const gcalIntegration = (integrations ?? []).find(
+    (i: Record<string, unknown>) => i.provider === "google_calendar"
+  );
+  if (gcalIntegration && (gcalIntegration as Record<string, unknown>).encrypted_tokens) {
+    try {
+      googleCalendarToken = decrypt((gcalIntegration as Record<string, unknown>).encrypted_tokens as string);
+    } catch {
+      console.error("Failed to decrypt Google Calendar token for Telegram user", userId);
+    }
+  }
+
   try {
     const result = await runAgent({
       message: text,
@@ -300,6 +322,7 @@ export async function POST(request: Request) {
         created_at: i.created_at as string,
       })),
       githubToken,
+      googleCalendarToken,
     });
 
     if (result.pendingConfirmation) {

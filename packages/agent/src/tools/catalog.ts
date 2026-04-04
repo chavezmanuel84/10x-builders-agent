@@ -78,6 +78,63 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       required: ["name"],
     },
   },
+  {
+    id: "gcal_list_events",
+    name: "gcal_list_events",
+    description:
+      "Lists the user's upcoming Google Calendar events for a given day. Defaults to today if no date is provided.",
+    risk: "low",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          description: "ISO date (YYYY-MM-DD). Defaults to today.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    id: "gcal_query_events",
+    name: "gcal_query_events",
+    description:
+      "Queries Google Calendar events within a date range.",
+    risk: "low",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        start_date: { type: "string", description: "Start date (YYYY-MM-DD)" },
+        end_date: { type: "string", description: "End date (YYYY-MM-DD)" },
+      },
+      required: ["start_date", "end_date"],
+    },
+  },
+  {
+    id: "gcal_create_event",
+    name: "gcal_create_event",
+    description:
+      "Creates a new event on the user's Google Calendar. Requires confirmation. Attendees must be specified by email address.",
+    risk: "medium",
+    requires_integration: "google_calendar",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Event title" },
+        start: { type: "string", description: "Start datetime (ISO 8601)" },
+        end: { type: "string", description: "End datetime (ISO 8601)" },
+        description: { type: "string", description: "Event description" },
+        attendees: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of attendee email addresses",
+        },
+      },
+      required: ["title", "start", "end"],
+    },
+  },
 ];
 
 export function getToolRisk(toolId: string): ToolRisk {
