@@ -1,7 +1,36 @@
 # Agente personal (MVP)
 
-Monorepo con **Next.js**, **Supabase**, **LangGraph** y **OpenRouter**. Incluye chat web, onboarding, ajustes y bot de **Telegram** (opcional).
+Monorepo con **Next.js**, **Supabase**, **LangGraph** y **OpenRouter**. Incluye chat web, onboarding, ajustes y bot de **Telegram** (opcional), además de integraciones reales con GitHub y Google Calendar mediante OAuth.
 
+## Quick Start (60 segundos)
+
+Desde la raíz del repositorio:
+
+```bash
+npm install
+cp .env.example apps/web/.env.local
+npm run dev
+```
+
+Luego completa en `apps/web/.env.local` las variables mínimas (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENROUTER_API_KEY`) y abre `http://localhost:3000/signup` o `http://localhost:3000/login`.
+
+## Capacidades principales
+- Agente conversacional multicanal (web + Telegram)
+- Integración con herramientas externas mediante OAuth
+- Ejecución de acciones desde lenguaje natural
+- Confirmación de acciones sensibles (UI + Telegram)
+- Soporte para fechas naturales ("hoy", "mañana", "próximo lunes")
+
+## Integraciones
+### GitHub
+- Listar repositorios
+- Listar issues
+- Crear issues
+- Crear repositorios
+### Google Calendar
+- Listar eventos (hoy, fechas específicas o lenguaje natural)
+- Crear eventos
+- Soporte para rangos de tiempo y fechas relativas
 ## Requisitos previos
 
 - **Node.js** 20 o superior (recomendado LTS).
@@ -14,8 +43,9 @@ Monorepo con **Next.js**, **Supabase**, **LangGraph** y **OpenRouter**. Incluye 
 
 ## Paso 1 — Clonar e instalar dependencias
 
+Desde la **raíz** del repositorio:
+
 ```bash
-cd agents
 npm install
 ```
 
@@ -81,8 +111,9 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `OPENROUTER_API_KEY` | Clave de OpenRouter |
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
-   | `OAUTH_ENCRYPTION_KEY` | Reservado para cifrado de tokens OAuth en el futuro; puedes dejar un placeholder hasta integrar proveedores |
-
+   | `OAUTH_ENCRYPTION_KEY` | Clave usada para cifrar/desencriptar tokens OAuth en servidor (requerida para integraciones como GitHub/Google Calendar) |
+   | `GOOGLE_CLIENT_ID`              | OAuth Client ID de Google      |
+   | `GOOGLE_CLIENT_SECRET`          | OAuth Client Secret de Google  |
 Referencia de nombres: [.env.example](.env.example).
 
 ---
@@ -142,6 +173,25 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 
 ---
 
+## Paso 9 — Google Calendar (opcional)
+
+1. En Google Cloud Console, crea un **OAuth Client** (tipo Web Application).
+   - Scopes requeridos: `https://www.googleapis.com/auth/calendar.readonly` y `https://www.googleapis.com/auth/calendar.events`.
+   - Sin estos scopes, la integración puede fallar con errores `403` al listar o crear eventos.
+2. Configura este redirect URI:
+
+   ```
+   http://localhost:3000/api/integrations/google-calendar/callback
+   ```
+
+3. Define en `apps/web/.env.local`:
+   - `GOOGLE_CLIENT_ID`
+   - `GOOGLE_CLIENT_SECRET`
+   - `OAUTH_ENCRYPTION_KEY`
+4. Inicia sesión en la app y conecta Google Calendar desde **Settings**.
+
+---
+
 ## Comandos útiles
 
 | Comando | Descripción |
@@ -167,5 +217,15 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - **Errores al guardar perfil o mensajes**: confirma que ejecutaste la migración SQL y que RLS no bloquea por falta de sesión (debes estar logueado con el mismo usuario).
 - **Chat sin respuesta / 500 en `/api/chat`**: `OPENROUTER_API_KEY`, cuota en OpenRouter o modelo en `model.ts`.
 - **Telegram no responde**: webhook debe ser HTTPS; token y secreto correctos; visita de nuevo `/api/telegram/setup` si cambias la URL pública.
+
+---
+
+## Próximos pasos (mejoras futuras)
+
+- Soporte para eliminación de eventos
+- Renderizado mejorado en Telegram
+- Mejor enrutamiento entre herramientas (GitHub vs Calendar)
+
+---
 
 Si quieres, el siguiente paso natural es desplegar **Vercel** (o similar) para `apps/web`, definir las mismas variables de entorno en el panel del proveedor y usar la URL de producción en Supabase y en el webhook de Telegram.
