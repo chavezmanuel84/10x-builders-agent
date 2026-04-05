@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { Fragment, type ReactNode, useState, useRef, useEffect } from "react";
 
 interface Message {
   role: string;
@@ -18,6 +18,67 @@ interface Confirmation {
 interface Props {
   agentName: string;
   initialMessages: Message[];
+}
+
+const MARKDOWN_LINK_REGEX = /\[([^\]]*)\]\(([^)\s]+)\)/g;
+
+function getSafeHref(url: string): string | null {
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+function getLinkLabel(label: string, url: string): string {
+  const cleanLabel = label.trim();
+  if (cleanLabel) return cleanLabel;
+  return url.length > 60 ? "Ver enlace" : url;
+}
+
+function renderMessageContent(content: string): ReactNode {
+  return content.split("\n").map((line, lineIndex, lines) => {
+    const segments: ReactNode[] = [];
+    let lastIndex = 0;
+
+    for (const match of line.matchAll(MARKDOWN_LINK_REGEX)) {
+      const start = match.index ?? 0;
+      const fullMatch = match[0];
+      const label = match[1] ?? "";
+      const url = match[2] ?? "";
+
+      if (start > lastIndex) {
+        segments.push(line.slice(lastIndex, start));
+      }
+
+      const safeHref = getSafeHref(url);
+      if (safeHref) {
+        segments.push(
+          <a
+            key={`link-${lineIndex}-${start}`}
+            href={safeHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-blue-400/70 underline-offset-2 break-words [overflow-wrap:anywhere] hover:text-blue-500 dark:hover:text-blue-300"
+          >
+            {getLinkLabel(label, safeHref)}
+          </a>
+        );
+      } else {
+        segments.push(fullMatch);
+      }
+
+      lastIndex = start + fullMatch.length;
+    }
+
+    if (lastIndex < line.length) {
+      segments.push(line.slice(lastIndex));
+    }
+
+    return (
+      <Fragment key={`line-${lineIndex}`}>
+        {segments}
+        {lineIndex < lines.length - 1 ? <br /> : null}
+      </Fragment>
+    );
+  });
 }
 
 export function ChatInterface({ agentName, initialMessages }: Props) {
@@ -146,7 +207,9 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
                     : "bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
                 }`}
               >
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <div className="break-words [overflow-wrap:anywhere]">
+                  {renderMessageContent(msg.content)}
+                </div>
               </div>
             </div>
           ))}
