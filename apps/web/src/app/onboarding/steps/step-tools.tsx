@@ -43,6 +43,27 @@ const AVAILABLE_TOOLS = [
     risk: "medium" as const,
     requiresIntegration: "github",
   },
+  {
+    id: "gcal_list_events",
+    name: "Google Calendar: listar eventos",
+    description: "Lista tus eventos de calendario para una fecha o para hoy.",
+    risk: "low" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "gcal_query_events",
+    name: "Google Calendar: consultar rango",
+    description: "Consulta eventos de Google Calendar en un rango de fechas.",
+    risk: "low" as const,
+    requiresIntegration: "google_calendar",
+  },
+  {
+    id: "gcal_create_event",
+    name: "Google Calendar: crear evento",
+    description: "Crea un evento en Google Calendar (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: "google_calendar",
+  },
 ];
 
 const RISK_LABELS = {
