@@ -4,6 +4,7 @@ import {
   addMessage,
   createServerClient,
   decrypt,
+  getOrCreateSession,
   getRecentPendingContexts,
   updateMessageContextStatus,
 } from "@agents/db";
@@ -72,31 +73,7 @@ export async function POST(request: Request) {
       }
     }
 
-    let session = await supabase
-      .from("agent_sessions")
-      .select("*")
-      .eq("user_id", user.id)
-      .eq("channel", "web")
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single()
-      .then((r) => r.data);
-
-    if (!session) {
-      const { data } = await supabase
-        .from("agent_sessions")
-        .insert({
-          user_id: user.id,
-          channel: "web",
-          status: "active",
-          budget_tokens_used: 0,
-          budget_tokens_limit: 100000,
-        })
-        .select()
-        .single();
-      session = data;
-    }
+    const session = await getOrCreateSession(db, user.id, "web");
 
     if (!session) {
       return NextResponse.json({ error: "Failed to create session" }, { status: 500 });
@@ -112,6 +89,7 @@ export async function POST(request: Request) {
         response: pendingResolution.clarification,
         pendingConfirmation: null,
         toolCalls: [],
+        sessionId: session.id,
       });
     }
 
@@ -122,6 +100,7 @@ export async function POST(request: Request) {
         toolCallId: pendingResolution.toolCallId,
         action: pendingResolution.action,
         expectedUserId: user.id,
+        expectedSessionId: session.id,
       });
       const responseText =
         confirmResult.result
@@ -134,13 +113,14 @@ export async function POST(request: Request) {
         response: responseText,
         pendingConfirmation: null,
         toolCalls: [],
+        sessionId: session.id,
       });
     }
 
     let contextInstruction: string | undefined;
     let messageForAgent = message;
     if (pendingResolution.kind === "resolve_pending_input") {
-      await updateMessageContextStatus(db, pendingResolution.messageId, "resolved");
+      await updateMessageContextStatus(db, session.id, pendingResolution.messageId, "resolved");
       messageForAgent = pendingResolution.rewrittenMessage;
       contextInstruction =
         "Solo continua el contexto activo indicado por el ultimo mensaje del usuario y evita reutilizar acciones viejas.";
@@ -177,6 +157,7 @@ export async function POST(request: Request) {
       response: result.pendingConfirmation ? null : result.response,
       pendingConfirmation: result.pendingConfirmation,
       toolCalls: result.toolCalls,
+      sessionId: session.id,
     });
   } catch (error) {
     console.error("Chat API error:", error);

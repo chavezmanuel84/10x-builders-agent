@@ -3,7 +3,10 @@ import {
   addMessage,
   createServerClient,
   decrypt,
+  getActiveSession,
+  getOrCreateSession,
   getRecentPendingContexts,
+  startNewSession,
   updateMessageContextStatus,
 } from "@agents/db";
 import { resolvePendingContextReply, runAgent } from "@agents/agent";
@@ -80,10 +83,39 @@ export async function POST(request: Request) {
   if (update.callback_query) {
     const cb = update.callback_query;
     const [action, toolCallId] = cb.data.split(":");
+    const { data: telegramAccount } = await db
+      .from("telegram_accounts")
+      .select("user_id")
+      .eq("telegram_user_id", cb.from.id)
+      .maybeSingle();
+    if (!telegramAccount) {
+      await answerCallbackQuery(cb.id, "Cuenta no vinculada");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        "No tienes una cuenta vinculada. Usa /link TU_CODIGO."
+      );
+      return NextResponse.json({ ok: true });
+    }
+    const expectedSession = await getActiveSession(db, telegramAccount.user_id, "telegram");
+    if (!expectedSession) {
+      await answerCallbackQuery(cb.id, "Sesion no activa");
+      await sendTelegramMessage(
+        cb.message.chat.id,
+        "No hay una sesion activa para confirmar esta accion. Envia /new y vuelve a intentarlo."
+      );
+      return NextResponse.json({ ok: true });
+    }
+    const expectedSessionId = expectedSession.id;
 
     if (action === "approve" && toolCallId) {
       await answerCallbackQuery(cb.id, "Aprobado");
-      const result = await executeToolCallAction({ db, toolCallId, action: "approve" });
+      const result = await executeToolCallAction({
+        db,
+        toolCallId,
+        action: "approve",
+        expectedUserId: telegramAccount.user_id,
+        expectedSessionId,
+      });
       if (!result.ok) {
         await sendTelegramMessage(cb.message.chat.id, result.error ?? "No pude aprobar la accion.");
       } else if (result.result) {
@@ -93,7 +125,13 @@ export async function POST(request: Request) {
       }
     } else if (action === "reject" && toolCallId) {
       await answerCallbackQuery(cb.id, "Rechazado");
-      const result = await executeToolCallAction({ db, toolCallId, action: "reject" });
+      const result = await executeToolCallAction({
+        db,
+        toolCallId,
+        action: "reject",
+        expectedUserId: telegramAccount.user_id,
+        expectedSessionId,
+      });
       await sendTelegramMessage(cb.message.chat.id, result.message ?? "Accion cancelada.");
     }
 
@@ -179,32 +217,14 @@ export async function POST(request: Request) {
 
   const userId = telegramAccount.user_id;
 
-  // Get or create session
-  let session = await db
-    .from("agent_sessions")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("channel", "telegram")
-    .eq("status", "active")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single()
-    .then((r) => r.data);
-
-  if (!session) {
-    const { data } = await db
-      .from("agent_sessions")
-      .insert({
-        user_id: userId,
-        channel: "telegram",
-        status: "active",
-        budget_tokens_used: 0,
-        budget_tokens_limit: 100000,
-      })
-      .select()
-      .single();
-    session = data;
+  if (command === "/new") {
+    await startNewSession(db, userId, "telegram");
+    await sendTelegramMessage(chatId, "Nueva sesion iniciada.");
+    return NextResponse.json({ ok: true });
   }
+
+  // Get or create session
+  const session = await getOrCreateSession(db, userId, "telegram");
 
   if (!session) {
     await sendTelegramMessage(chatId, "Error interno creando sesión.");
@@ -272,6 +292,8 @@ export async function POST(request: Request) {
         db,
         toolCallId: pendingResolution.toolCallId,
         action: pendingResolution.action,
+        expectedUserId: userId,
+        expectedSessionId: session.id,
       });
       const responseText =
         confirmResult.result
@@ -287,7 +309,7 @@ export async function POST(request: Request) {
     let contextInstruction: string | undefined;
     let messageForAgent = text;
     if (pendingResolution.kind === "resolve_pending_input") {
-      await updateMessageContextStatus(db, pendingResolution.messageId, "resolved");
+      await updateMessageContextStatus(db, session.id, pendingResolution.messageId, "resolved");
       messageForAgent = pendingResolution.rewrittenMessage;
       contextInstruction =
         "Solo continua el contexto activo indicado por el ultimo mensaje del usuario y evita reutilizar acciones viejas.";
@@ -322,11 +344,13 @@ export async function POST(request: Request) {
 
     if (result.pendingConfirmation) {
       const pc = result.pendingConfirmation;
+      const approveData = `approve:${pc.toolCallId}`;
+      const rejectData = `reject:${pc.toolCallId}`;
       await sendTelegramMessage(chatId, pc.message, {
         inline_keyboard: [
           [
-            { text: "Aprobar", callback_data: `approve:${pc.toolCallId}` },
-            { text: "Cancelar", callback_data: `reject:${pc.toolCallId}` },
+            { text: "Aprobar", callback_data: approveData },
+            { text: "Cancelar", callback_data: rejectData },
           ],
         ],
       });

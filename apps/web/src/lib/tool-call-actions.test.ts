@@ -80,7 +80,13 @@ describe("executeToolCallAction", () => {
       expectedUserId: "user-1",
     });
     expect(result.ok).toBe(true);
-    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(db, "tc-1", "rejected");
+    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(
+      db,
+      "tc-1",
+      "rejected",
+      undefined,
+      "session-web"
+    );
     expect(mocks.closeActiveContextsByToolCallIdMock).toHaveBeenCalledWith(
       db,
       "session-web",
@@ -108,9 +114,15 @@ describe("executeToolCallAction", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.statusCode).toBe(400);
-    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(db, "tc-2", "failed", {
-      error: "github not connected",
-    });
+    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(
+      db,
+      "tc-2",
+      "failed",
+      {
+        error: "github not connected",
+      },
+      "session-web"
+    );
     expect(mocks.closeActiveContextsByToolCallIdMock).toHaveBeenCalledWith(
       db,
       "session-web",
@@ -146,16 +158,50 @@ describe("executeToolCallAction", () => {
 
     expect(result.ok).toBe(true);
     expect(result.result).toMatchObject({ full_name: "u/dummy-repo-2" });
-    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(db, "tc-3", "approved");
-    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(db, "tc-3", "executed", {
-      repo_url: "https://github.com/u/dummy-repo-2",
-      full_name: "u/dummy-repo-2",
-    });
+    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(
+      db,
+      "tc-3",
+      "approved",
+      undefined,
+      "session-web"
+    );
+    expect(mocks.updateToolCallStatusMock).toHaveBeenCalledWith(
+      db,
+      "tc-3",
+      "executed",
+      {
+        repo_url: "https://github.com/u/dummy-repo-2",
+        full_name: "u/dummy-repo-2",
+      },
+      "session-web"
+    );
     expect(mocks.closeActiveContextsByToolCallIdMock).toHaveBeenCalledWith(
       db,
       "session-web",
       "tc-3",
       "executed"
     );
+  });
+
+  it("blocks confirmation when expected session does not match", async () => {
+    const db = makeDbClient({
+      toolCall: {
+        id: "tc-4",
+        session_id: "session-old",
+        tool_name: "github_create_repo",
+        arguments_json: { name: "Dummy repo 2", private: false },
+        agent_sessions: { user_id: "user-1" },
+      },
+    });
+    const result = await executeToolCallAction({
+      db,
+      toolCallId: "tc-4",
+      action: "approve",
+      expectedUserId: "user-1",
+      expectedSessionId: "session-new",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.statusCode).toBe(409);
+    expect(mocks.updateToolCallStatusMock).not.toHaveBeenCalled();
   });
 });

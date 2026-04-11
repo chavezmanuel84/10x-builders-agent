@@ -155,6 +155,24 @@ describe("resolvePendingContextReply", () => {
     expect(result.kind).toBe("no_match");
   });
 
+  it("respuesta ambigua en sesion nueva no ejecuta pending_confirmation viejo", () => {
+    const contexts: PendingContextCandidate[] = [
+      makeContext({
+        session_id: "session-old",
+        payload: {
+          context_type: "pending_confirmation",
+          context_status: "active",
+          tool_name: "github_create_repo",
+          pending_field: "confirmation",
+          tool_call_id: "tc-old",
+        },
+      }),
+    ];
+
+    const result = resolvePendingContextReply("si", "session-new", contexts);
+    expect(result.kind).toBe("no_match");
+  });
+
   it("contextos cerrados no se seleccionan (approved/rejected/executed/failed)", () => {
     const contexts: PendingContextCandidate[] = [
       makeContext({

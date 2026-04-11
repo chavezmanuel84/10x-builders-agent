@@ -94,12 +94,14 @@ export async function getRecentPendingContexts(
 
 export async function updateMessageContextStatus(
   db: DbClient,
+  sessionId: string,
   messageId: string,
   status: ConversationContextStatus
 ) {
   const { data, error } = await db
     .from("agent_messages")
     .select("id, structured_payload")
+    .eq("session_id", sessionId)
     .eq("id", messageId)
     .single();
   if (error) throw error;
@@ -114,8 +116,39 @@ export async function updateMessageContextStatus(
   const { error: updateError } = await db
     .from("agent_messages")
     .update({ structured_payload: nextPayload })
+    .eq("session_id", sessionId)
     .eq("id", messageId);
   if (updateError) throw updateError;
+}
+
+export async function closeActiveContextsForSession(
+  db: DbClient,
+  sessionId: string
+) {
+  const { data, error } = await db
+    .from("agent_messages")
+    .select("id, structured_payload")
+    .eq("session_id", sessionId)
+    .eq("role", "assistant")
+    .not("structured_payload", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (error) throw error;
+
+  for (const row of (data ?? []) as AgentMessage[]) {
+    const payload = asConversationPayload(row.structured_payload);
+    if (!payload || payload.context_status !== "active") continue;
+    const nextPayload: ConversationContextPayload = {
+      ...payload,
+      context_status: payload.context_type === "pending_confirmation" ? "rejected" : "resolved",
+    };
+    const { error: updateError } = await db
+      .from("agent_messages")
+      .update({ structured_payload: nextPayload })
+      .eq("session_id", sessionId)
+      .eq("id", row.id);
+    if (updateError) throw updateError;
+  }
 }
 
 export async function closeActiveContextsByToolCallId(

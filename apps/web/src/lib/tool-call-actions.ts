@@ -14,6 +14,7 @@ interface ExecuteToolCallActionInput {
   toolCallId: string;
   action: ToolAction;
   expectedUserId?: string;
+  expectedSessionId?: string;
 }
 
 interface ExecuteToolCallActionResult {
@@ -34,14 +35,17 @@ interface ExecuteToolCallActionResult {
 export async function executeToolCallAction(
   input: ExecuteToolCallActionInput
 ): Promise<ExecuteToolCallActionResult> {
-  const { db, toolCallId, action, expectedUserId } = input;
+  const { db, toolCallId, action, expectedUserId, expectedSessionId } = input;
 
-  const { data: toolCall } = await db
+  let query = db
     .from("tool_calls")
     .select("*, agent_sessions!inner(user_id)")
     .eq("id", toolCallId)
-    .eq("status", "pending_confirmation")
-    .single();
+    .eq("status", "pending_confirmation");
+  if (expectedSessionId) {
+    query = query.eq("session_id", expectedSessionId);
+  }
+  const { data: toolCall } = await query.single();
 
   if (!toolCall) {
     return {
@@ -55,9 +59,12 @@ export async function executeToolCallAction(
   if (expectedUserId && ownerUserId !== expectedUserId) {
     return { ok: false, statusCode: 403, error: "Forbidden" };
   }
+  if (expectedSessionId && toolCall.session_id !== expectedSessionId) {
+    return { ok: false, statusCode: 409, error: "Session mismatch for tool confirmation" };
+  }
 
   if (action === "reject") {
-    await updateToolCallStatus(db, toolCallId, "rejected");
+    await updateToolCallStatus(db, toolCallId, "rejected", undefined, toolCall.session_id);
     await closeActiveContextsByToolCallId(db, toolCall.session_id, toolCallId, "rejected");
     return {
       ok: true,
@@ -69,9 +76,15 @@ export async function executeToolCallAction(
 
   const provider = getProviderForTool(toolCall.tool_name);
   if (!provider) {
-    await updateToolCallStatus(db, toolCallId, "failed", {
+    await updateToolCallStatus(
+      db,
+      toolCallId,
+      "failed",
+      {
       error: `Unknown provider for tool: ${toolCall.tool_name}`,
-    });
+      },
+      toolCall.session_id
+    );
     await closeActiveContextsByToolCallId(db, toolCall.session_id, toolCallId, "failed");
     return { ok: false, statusCode: 400, error: "Unknown tool provider" };
   }
@@ -85,9 +98,15 @@ export async function executeToolCallAction(
     .single();
 
   if (!integration?.encrypted_tokens) {
-    await updateToolCallStatus(db, toolCallId, "failed", {
-      error: `${provider} not connected`,
-    });
+    await updateToolCallStatus(
+      db,
+      toolCallId,
+      "failed",
+      {
+        error: `${provider} not connected`,
+      },
+      toolCall.session_id
+    );
     await closeActiveContextsByToolCallId(db, toolCall.session_id, toolCallId, "failed");
     return {
       ok: false,
@@ -98,7 +117,7 @@ export async function executeToolCallAction(
 
   const token = decrypt(integration.encrypted_tokens);
   try {
-    await updateToolCallStatus(db, toolCallId, "approved");
+    await updateToolCallStatus(db, toolCallId, "approved", undefined, toolCall.session_id);
 
     let result: Record<string, unknown>;
     if (provider === "github") {
@@ -112,7 +131,7 @@ export async function executeToolCallAction(
       const tz = (userProfile?.timezone as string) ?? "UTC";
       result = await executeGoogleCalendarTool(toolCall.tool_name, toolCall.arguments_json, token, tz);
     }
-    await updateToolCallStatus(db, toolCallId, "executed", result);
+    await updateToolCallStatus(db, toolCallId, "executed", result, toolCall.session_id);
     await closeActiveContextsByToolCallId(db, toolCall.session_id, toolCallId, "executed");
     return {
       ok: true,
@@ -122,7 +141,13 @@ export async function executeToolCallAction(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Execution failed";
-    await updateToolCallStatus(db, toolCallId, "failed", { error: message });
+    await updateToolCallStatus(
+      db,
+      toolCallId,
+      "failed",
+      { error: message },
+      toolCall.session_id
+    );
     await closeActiveContextsByToolCallId(db, toolCall.session_id, toolCallId, "failed");
     return { ok: false, statusCode: 200, error: message };
   }

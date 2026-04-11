@@ -97,6 +97,7 @@ export function ChatInterface({
   sessionId,
   initialHasMoreOlder,
 }: Props) {
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -117,6 +118,10 @@ export function ChatInterface({
     shouldAutoScrollRef.current = true;
   }, []);
 
+  useEffect(() => {
+    setActiveSessionId(sessionId);
+  }, [sessionId]);
+
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -135,19 +140,22 @@ export function ChatInterface({
   }, [messages]);
 
   async function handleLoadOlderMessages() {
-    if (!sessionId || loadingOlder || !hasMoreOlder || messages.length === 0) return;
+    if (!activeSessionId || loadingOlder || !hasMoreOlder || messages.length === 0) return;
     const oldestMessage = messages[0];
     if (!oldestMessage.id || !oldestMessage.created_at) return;
 
     setLoadingOlder(true);
     try {
       const params = new URLSearchParams({
-        sessionId,
+        sessionId: activeSessionId,
         beforeCreatedAt: oldestMessage.created_at,
         beforeId: oldestMessage.id,
       });
       const res = await fetch(`/api/chat/messages?${params.toString()}`);
       const data = await res.json();
+      if (typeof data.sessionId === "string") {
+        setActiveSessionId(data.sessionId);
+      }
       if (!res.ok) return;
 
       const olderMessages = Array.isArray(data.messages)
@@ -225,7 +233,7 @@ export function ChatInterface({
   }
 
   async function handleConfirm(action: "approve" | "reject") {
-    if (!pendingConfirm) return;
+    if (!pendingConfirm || !activeSessionId) return;
     setConfirming(true);
 
     try {
@@ -235,6 +243,7 @@ export function ChatInterface({
         body: JSON.stringify({
           toolCallId: pendingConfirm.toolCallId,
           action,
+          sessionId: activeSessionId,
         }),
       });
       const data = await res.json();
@@ -273,12 +282,40 @@ export function ChatInterface({
     }
   }
 
+  async function handleNewChat() {
+    if (loading || confirming) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/chat/session/new", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok || typeof data.sessionId !== "string") {
+        throw new Error("No se pudo iniciar una nueva sesion");
+      }
+      setActiveSessionId(data.sessionId);
+      setMessages([]);
+      setPendingConfirm(null);
+      setHasMoreOlder(false);
+      setInput("");
+      shouldAutoScrollRef.current = true;
+    } catch {
+      shouldAutoScrollRef.current = true;
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "No pude crear una nueva sesion. Intenta de nuevo." },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="flex flex-1 flex-col">
       {/* Messages */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl space-y-4">
-          {sessionId && hasMoreOlder && (
+          {activeSessionId && hasMoreOlder && (
             <div className="flex justify-center">
               <button
                 type="button"
@@ -290,6 +327,16 @@ export function ChatInterface({
               </button>
             </div>
           )}
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={handleNewChat}
+              disabled={loading || confirming}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            >
+              Nueva sesion
+            </button>
+          </div>
           {messages.length === 0 && (
             <div className="text-center text-sm text-neutral-400 py-20">
               <p className="text-lg font-medium text-neutral-600 dark:text-neutral-300">

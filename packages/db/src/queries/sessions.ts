@@ -1,5 +1,11 @@
 import type { DbClient } from "../client";
 import type { AgentSession, Channel } from "@agents/types";
+import {
+  closeActiveContextsForSession,
+} from "./messages";
+import {
+  closePendingConfirmationToolCallsForSession,
+} from "./tool-calls";
 
 export async function createSession(
   db: DbClient,
@@ -34,8 +40,49 @@ export async function getActiveSession(
     .eq("status", "active")
     .order("created_at", { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
   return data as AgentSession | null;
+}
+
+export async function closeActiveSession(
+  db: DbClient,
+  userId: string,
+  channel: Channel
+) {
+  const { data: sessions, error } = await db
+    .from("agent_sessions")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("channel", channel)
+    .eq("status", "active")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+
+  const activeSessions = (sessions ?? []) as Array<{ id: string }>;
+  if (activeSessions.length === 0) return [] as string[];
+
+  const now = new Date().toISOString();
+  for (const session of activeSessions) {
+    await closeActiveContextsForSession(db, session.id);
+    await closePendingConfirmationToolCallsForSession(db, session.id, "new_session_started");
+    const { error: updateError } = await db
+      .from("agent_sessions")
+      .update({ status: "closed", updated_at: now })
+      .eq("id", session.id)
+      .eq("status", "active");
+    if (updateError) throw updateError;
+  }
+
+  return activeSessions.map((session) => session.id);
+}
+
+export async function startNewSession(
+  db: DbClient,
+  userId: string,
+  channel: Channel
+) {
+  await closeActiveSession(db, userId, channel);
+  return createSession(db, userId, channel);
 }
 
 export async function getOrCreateSession(
