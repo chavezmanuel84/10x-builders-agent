@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createServerClient, decrypt } from "@agents/db";
-import { runAgent } from "@agents/agent";
+import {
+  addMessage,
+  createServerClient,
+  decrypt,
+  getRecentPendingContexts,
+  updateMessageContextStatus,
+} from "@agents/db";
+import { resolvePendingContextReply, runAgent } from "@agents/agent";
+import { executeToolCallAction } from "@/lib/tool-call-actions";
 
 export async function POST(request: Request) {
   try {
@@ -95,8 +102,52 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Failed to create session" }, { status: 500 });
     }
 
+    const pendingContexts = await getRecentPendingContexts(db, session.id);
+    const pendingResolution = resolvePendingContextReply(message, session.id, pendingContexts);
+
+    if (pendingResolution.kind === "no_match" || pendingResolution.kind === "ambiguous") {
+      await addMessage(db, session.id, "user", message);
+      await addMessage(db, session.id, "assistant", pendingResolution.clarification);
+      return NextResponse.json({
+        response: pendingResolution.clarification,
+        pendingConfirmation: null,
+        toolCalls: [],
+      });
+    }
+
+    if (pendingResolution.kind === "resolve_pending_confirmation") {
+      await addMessage(db, session.id, "user", message);
+      const confirmResult = await executeToolCallAction({
+        db,
+        toolCallId: pendingResolution.toolCallId,
+        action: pendingResolution.action,
+        expectedUserId: user.id,
+      });
+      const responseText =
+        confirmResult.result
+          ? `Accion ejecutada: ${JSON.stringify(confirmResult.result)}`
+          : (confirmResult.message ??
+            confirmResult.error ??
+            "No pude resolver la confirmacion. Aclara la accion que deseas.");
+      await addMessage(db, session.id, "assistant", responseText);
+      return NextResponse.json({
+        response: responseText,
+        pendingConfirmation: null,
+        toolCalls: [],
+      });
+    }
+
+    let contextInstruction: string | undefined;
+    let messageForAgent = message;
+    if (pendingResolution.kind === "resolve_pending_input") {
+      await updateMessageContextStatus(db, pendingResolution.messageId, "resolved");
+      messageForAgent = pendingResolution.rewrittenMessage;
+      contextInstruction =
+        "Solo continua el contexto activo indicado por el ultimo mensaje del usuario y evita reutilizar acciones viejas.";
+    }
+
     const result = await runAgent({
-      message,
+      message: messageForAgent,
       userId: user.id,
       sessionId: session.id,
       systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
@@ -119,6 +170,7 @@ export async function POST(request: Request) {
       githubToken,
       googleCalendarToken,
       userTimezone: (profile?.timezone as string) ?? "UTC",
+      contextInstruction,
     });
 
     return NextResponse.json({

@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
-import { createServerClient, decrypt, updateToolCallStatus } from "@agents/db";
-import { runAgent, executeGitHubTool, executeGoogleCalendarTool } from "@agents/agent";
+import {
+  addMessage,
+  createServerClient,
+  decrypt,
+  getRecentPendingContexts,
+  updateMessageContextStatus,
+} from "@agents/db";
+import { resolvePendingContextReply, runAgent } from "@agents/agent";
+import { executeToolCallAction } from "@/lib/tool-call-actions";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -75,79 +82,19 @@ export async function POST(request: Request) {
     const [action, toolCallId] = cb.data.split(":");
 
     if (action === "approve" && toolCallId) {
-      await db
-        .from("tool_calls")
-        .update({ status: "approved" })
-        .eq("id", toolCallId)
-        .eq("status", "pending_confirmation");
       await answerCallbackQuery(cb.id, "Aprobado");
-
-      const { data: toolCall } = await db
-        .from("tool_calls")
-        .select("*, agent_sessions!inner(user_id)")
-        .eq("id", toolCallId)
-        .single();
-
-      if (toolCall) {
-        const userId = (toolCall.agent_sessions as Record<string, unknown>).user_id as string;
-        const toolName = toolCall.tool_name as string;
-        const provider = toolName.startsWith("github_")
-          ? "github"
-          : toolName.startsWith("gcal_")
-            ? "google_calendar"
-            : null;
-
-        if (!provider) {
-          await sendTelegramMessage(cb.message.chat.id, "Proveedor desconocido para esta acción.");
-        } else {
-          const { data: integration } = await db
-            .from("user_integrations")
-            .select("encrypted_tokens")
-            .eq("user_id", userId)
-            .eq("provider", provider)
-            .eq("status", "active")
-            .single();
-
-          if (integration?.encrypted_tokens) {
-            try {
-              const token = decrypt(integration.encrypted_tokens);
-              let result: Record<string, unknown>;
-              if (provider === "github") {
-                result = await executeGitHubTool(toolName, toolCall.arguments_json, token);
-              } else {
-                const { data: userProfile } = await db
-                  .from("profiles")
-                  .select("timezone")
-                  .eq("id", userId)
-                  .single();
-                const tz = (userProfile?.timezone as string) ?? "UTC";
-                result = await executeGoogleCalendarTool(toolName, toolCall.arguments_json, token, tz);
-              }
-              await updateToolCallStatus(db, toolCallId, "executed", result);
-              await sendTelegramMessage(
-                cb.message.chat.id,
-                `Acción ejecutada: ${JSON.stringify(result)}`
-              );
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : "Error desconocido";
-              await updateToolCallStatus(db, toolCallId, "failed", { error: msg });
-              await sendTelegramMessage(cb.message.chat.id, `Error al ejecutar: ${msg}`);
-            }
-          } else {
-            await sendTelegramMessage(cb.message.chat.id, `${provider} no está conectado.`);
-          }
-        }
+      const result = await executeToolCallAction({ db, toolCallId, action: "approve" });
+      if (!result.ok) {
+        await sendTelegramMessage(cb.message.chat.id, result.error ?? "No pude aprobar la accion.");
+      } else if (result.result) {
+        await sendTelegramMessage(cb.message.chat.id, `Accion ejecutada: ${JSON.stringify(result.result)}`);
       } else {
-        await sendTelegramMessage(cb.message.chat.id, "Acción aprobada. Ejecutando...");
+        await sendTelegramMessage(cb.message.chat.id, result.message ?? "Accion aprobada.");
       }
     } else if (action === "reject" && toolCallId) {
-      await db
-        .from("tool_calls")
-        .update({ status: "rejected" })
-        .eq("id", toolCallId)
-        .eq("status", "pending_confirmation");
       await answerCallbackQuery(cb.id, "Rechazado");
-      await sendTelegramMessage(cb.message.chat.id, "Acción cancelada.");
+      const result = await executeToolCallAction({ db, toolCallId, action: "reject" });
+      await sendTelegramMessage(cb.message.chat.id, result.message ?? "Accion cancelada.");
     }
 
     return NextResponse.json({ ok: true });
@@ -309,8 +256,45 @@ export async function POST(request: Request) {
   }
 
   try {
+    const pendingContexts = await getRecentPendingContexts(db, session.id);
+    const pendingResolution = resolvePendingContextReply(text, session.id, pendingContexts);
+
+    if (pendingResolution.kind === "no_match" || pendingResolution.kind === "ambiguous") {
+      await addMessage(db, session.id, "user", text);
+      await addMessage(db, session.id, "assistant", pendingResolution.clarification);
+      await sendTelegramMessage(chatId, pendingResolution.clarification);
+      return NextResponse.json({ ok: true });
+    }
+
+    if (pendingResolution.kind === "resolve_pending_confirmation") {
+      await addMessage(db, session.id, "user", text);
+      const confirmResult = await executeToolCallAction({
+        db,
+        toolCallId: pendingResolution.toolCallId,
+        action: pendingResolution.action,
+      });
+      const responseText =
+        confirmResult.result
+          ? `Accion ejecutada: ${JSON.stringify(confirmResult.result)}`
+          : (confirmResult.message ??
+            confirmResult.error ??
+            "No pude resolver la confirmacion. Aclara la accion que deseas.");
+      await addMessage(db, session.id, "assistant", responseText);
+      await sendTelegramMessage(chatId, responseText);
+      return NextResponse.json({ ok: true });
+    }
+
+    let contextInstruction: string | undefined;
+    let messageForAgent = text;
+    if (pendingResolution.kind === "resolve_pending_input") {
+      await updateMessageContextStatus(db, pendingResolution.messageId, "resolved");
+      messageForAgent = pendingResolution.rewrittenMessage;
+      contextInstruction =
+        "Solo continua el contexto activo indicado por el ultimo mensaje del usuario y evita reutilizar acciones viejas.";
+    }
+
     const result = await runAgent({
-      message: text,
+      message: messageForAgent,
       userId,
       sessionId: session.id,
       systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
@@ -333,6 +317,7 @@ export async function POST(request: Request) {
       githubToken,
       googleCalendarToken,
       userTimezone: (profile?.timezone as string) ?? "UTC",
+      contextInstruction,
     });
 
     if (result.pendingConfirmation) {

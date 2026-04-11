@@ -44,13 +44,32 @@ export interface AgentSession {
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
 
+export type ConversationContextType = "pending_input" | "pending_confirmation";
+
+export type ConversationContextStatus =
+  | "active"
+  | "resolved"
+  | "approved"
+  | "rejected"
+  | "executed"
+  | "failed";
+
+export interface ConversationContextPayload {
+  context_type: ConversationContextType;
+  context_status: ConversationContextStatus;
+  tool_name: string;
+  pending_field?: string;
+  entity?: Record<string, unknown>;
+  tool_call_id?: string;
+}
+
 export interface AgentMessage {
   id: string;
   session_id: string;
   role: MessageRole;
   content: string;
   tool_call_id?: string;
-  structured_payload?: Record<string, unknown>;
+  structured_payload?: Record<string, unknown> | ConversationContextPayload;
   created_at: string;
 }
 

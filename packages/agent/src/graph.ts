@@ -6,7 +6,12 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { DbClient } from "@agents/db";
-import type { UserToolSetting, UserIntegration, PendingConfirmation } from "@agents/types";
+import type {
+  ConversationContextPayload,
+  PendingConfirmation,
+  UserIntegration,
+  UserToolSetting,
+} from "@agents/types";
 import { createChatModel } from "./model";
 import { buildLangChainTools } from "./tools/adapters";
 import { getSessionMessages, addMessage } from "@agents/db";
@@ -36,6 +41,7 @@ export interface AgentInput {
   githubToken?: string;
   googleCalendarToken?: string;
   userTimezone: string;
+  contextInstruction?: string;
 }
 
 export interface AgentOutput {
@@ -46,8 +52,59 @@ export interface AgentOutput {
 
 const MAX_TOOL_ITERATIONS = 6;
 
+function normalizeText(input: string): string {
+  return input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function extractRepoName(message: string): string | null {
+  const quoted = message.match(/["“]([^"”]+)["”]/);
+  if (quoted?.[1]) return quoted[1].trim();
+  const named = message.match(/(?:llamado|named)\s+([a-z0-9._\-\s]+)/i);
+  if (named?.[1]) return named[1].trim().replace(/[?.!,;:]+$/, "");
+  return null;
+}
+
+function detectPendingInputPayload(
+  userMessage: string,
+  assistantMessage: string
+): ConversationContextPayload | null {
+  const assistantNorm = normalizeText(assistantMessage);
+  const userNorm = normalizeText(userMessage);
+  const asksVisibility =
+    assistantNorm.includes("public") &&
+    assistantNorm.includes("privad") &&
+    assistantNorm.includes("repositorio");
+  const isRepoCreationFlow =
+    userNorm.includes("repo") &&
+    (userNorm.includes("crea") || userNorm.includes("crear"));
+  if (!asksVisibility || !isRepoCreationFlow) return null;
+
+  return {
+    context_type: "pending_input",
+    context_status: "active",
+    tool_name: "github_create_repo",
+    pending_field: "visibility",
+    entity: { repo_name: extractRepoName(userMessage) ?? "el repositorio" },
+  };
+}
+
 export async function runAgent(input: AgentInput): Promise<AgentOutput> {
-  const { message, userId, sessionId, systemPrompt, db, enabledTools, integrations, githubToken, googleCalendarToken, userTimezone } = input;
+  const {
+    message,
+    userId,
+    sessionId,
+    systemPrompt,
+    db,
+    enabledTools,
+    integrations,
+    githubToken,
+    googleCalendarToken,
+    userTimezone,
+    contextInstruction,
+  } = input;
 
   const model = createChatModel();
   const lcTools = buildLangChainTools({
@@ -153,6 +210,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const initialMessages: BaseMessage[] = [
     new SystemMessage(systemPrompt),
+    ...(contextInstruction ? [new SystemMessage(contextInstruction)] : []),
     ...priorMessages,
     new HumanMessage(message),
   ];
@@ -170,7 +228,21 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       ? lastMessage.content
       : JSON.stringify(lastMessage.content);
 
-  await addMessage(db, sessionId, "assistant", responseText);
+  const structuredPayload: ConversationContextPayload | undefined = pendingConfirmation
+    ? {
+        context_type: "pending_confirmation",
+        context_status: "active",
+        tool_name: pendingConfirmation.toolName,
+        pending_field: "confirmation",
+        tool_call_id: pendingConfirmation.toolCallId,
+        entity: pendingConfirmation.args,
+      }
+    : detectPendingInputPayload(message, responseText) ?? undefined;
+
+  await addMessage(db, sessionId, "assistant", responseText, {
+    ...(pendingConfirmation ? { tool_call_id: pendingConfirmation.toolCallId } : {}),
+    ...(structuredPayload ? { structured_payload: structuredPayload } : {}),
+  });
 
   return { response: responseText, toolCalls: toolCallNames, pendingConfirmation };
 }
