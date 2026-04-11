@@ -25,15 +25,24 @@ export default async function ChatPage() {
     .limit(1)
     .single();
 
-  let sessionMessages: Array<{ role: string; content: string; created_at: string }> = [];
+  let sessionMessages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    created_at: string;
+  }> = [];
+  let initialHasMoreOlder = false;
   if (messages?.id) {
     const { data } = await supabase
       .from("agent_messages")
-      .select("role, content, created_at")
+      .select("id, role, content, created_at")
       .eq("session_id", messages.id)
-      .order("created_at", { ascending: true })
-      .limit(50);
-    sessionMessages = data ?? [];
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(51);
+    const page = data ?? [];
+    initialHasMoreOlder = page.length > 50;
+    sessionMessages = page.slice(0, 50).reverse();
   }
 
   return (
@@ -68,6 +77,8 @@ export default async function ChatPage() {
       <ChatInterface
         agentName={profile.agent_name as string}
         initialMessages={sessionMessages}
+        sessionId={messages?.id ?? null}
+        initialHasMoreOlder={initialHasMoreOlder}
       />
     </div>
   );

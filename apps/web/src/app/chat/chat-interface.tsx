@@ -1,8 +1,16 @@
 "use client";
 
-import { Fragment, type ReactNode, useState, useRef, useEffect } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 interface Message {
+  id?: string;
   role: string;
   content: string;
   created_at?: string;
@@ -18,6 +26,8 @@ interface Confirmation {
 interface Props {
   agentName: string;
   initialMessages: Message[];
+  sessionId: string | null;
+  initialHasMoreOlder: boolean;
 }
 
 const MARKDOWN_LINK_REGEX = /\[([^\]]*)\]\(([^)\s]+)\)/g;
@@ -81,17 +91,90 @@ function renderMessageContent(content: string): ReactNode {
   });
 }
 
-export function ChatInterface({ agentName, initialMessages }: Props) {
+export function ChatInterface({
+  agentName,
+  initialMessages,
+  sessionId,
+  initialHasMoreOlder,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<Confirmation | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(initialHasMoreOlder);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const pendingScrollRestoreRef = useRef<{
+    previousHeight: number;
+    previousTop: number;
+  } | null>(null);
 
   useEffect(() => {
+    if (!messages.length) return;
+    shouldAutoScrollRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const restore = pendingScrollRestoreRef.current;
+    if (restore) {
+      container.scrollTop =
+        container.scrollHeight - restore.previousHeight + restore.previousTop;
+      pendingScrollRestoreRef.current = null;
+      return;
+    }
+
+    if (!shouldAutoScrollRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    shouldAutoScrollRef.current = false;
   }, [messages]);
+
+  async function handleLoadOlderMessages() {
+    if (!sessionId || loadingOlder || !hasMoreOlder || messages.length === 0) return;
+    const oldestMessage = messages[0];
+    if (!oldestMessage.id || !oldestMessage.created_at) return;
+
+    setLoadingOlder(true);
+    try {
+      const params = new URLSearchParams({
+        sessionId,
+        beforeCreatedAt: oldestMessage.created_at,
+        beforeId: oldestMessage.id,
+      });
+      const res = await fetch(`/api/chat/messages?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) return;
+
+      const olderMessages = Array.isArray(data.messages)
+        ? (data.messages as Message[])
+        : [];
+      const existingIds = new Set(messages.map((msg) => msg.id).filter(Boolean));
+      const uniqueOlderMessages = olderMessages.filter(
+        (msg) => msg.id && !existingIds.has(msg.id)
+      );
+      setHasMoreOlder(Boolean(data.hasMoreOlder));
+
+      if (!uniqueOlderMessages.length) return;
+
+      const container = scrollContainerRef.current;
+      if (container) {
+        pendingScrollRestoreRef.current = {
+          previousHeight: container.scrollHeight,
+          previousTop: container.scrollTop,
+        };
+      }
+
+      shouldAutoScrollRef.current = false;
+      setMessages((prev) => [...uniqueOlderMessages, ...prev]);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -99,6 +182,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
     if (!text || loading) return;
 
     const userMsg: Message = { role: "user", content: text };
+    shouldAutoScrollRef.current = true;
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
@@ -114,6 +198,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
 
       if (data.pendingConfirmation) {
         setPendingConfirm(data.pendingConfirmation);
+        shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           {
@@ -122,12 +207,14 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
           },
         ]);
       } else if (data.response) {
+        shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: data.response },
         ]);
       }
     } catch {
+      shouldAutoScrollRef.current = true;
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: "Error al procesar tu mensaje. Intenta de nuevo." },
@@ -153,6 +240,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
       const data = await res.json();
 
       if (action === "approve" && data.result) {
+        shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           {
@@ -161,17 +249,20 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
           },
         ]);
       } else if (action === "reject") {
+        shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: "Acción cancelada." },
         ]);
       } else if (data.error) {
+        shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: `Error: ${data.error}` },
         ]);
       }
     } catch {
+      shouldAutoScrollRef.current = true;
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: "Error al confirmar la acción." },
@@ -185,8 +276,20 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
   return (
     <div className="flex flex-1 flex-col">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl space-y-4">
+          {sessionId && hasMoreOlder && (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleLoadOlderMessages}
+                disabled={loadingOlder}
+                className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+              >
+                {loadingOlder ? "Cargando..." : "Cargar mensajes anteriores"}
+              </button>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="text-center text-sm text-neutral-400 py-20">
               <p className="text-lg font-medium text-neutral-600 dark:text-neutral-300">
@@ -197,7 +300,7 @@ export function ChatInterface({ agentName, initialMessages }: Props) {
           )}
           {messages.map((msg, i) => (
             <div
-              key={i}
+              key={msg.id ?? `${msg.created_at ?? "message"}-${i}`}
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
