@@ -213,14 +213,25 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async () => {
-          const { getProfile } = await import("@agents/db");
-          const profile = await getProfile(ctx.db, ctx.userId);
-          return JSON.stringify({
-            name: profile.name,
-            timezone: profile.timezone,
-            language: profile.language,
-            agent_name: profile.agent_name,
-          });
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "get_user_preferences", {}, false
+          );
+          try {
+            const { getProfile } = await import("@agents/db");
+            const profile = await getProfile(ctx.db, ctx.userId);
+            const result = {
+              name: profile.name,
+              timezone: profile.timezone,
+              language: profile.language,
+              agent_name: profile.agent_name,
+            };
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
         },
         {
           name: "get_user_preferences",
@@ -235,10 +246,22 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async () => {
-          const enabled = ctx.enabledTools
-            .filter((t) => t.enabled)
-            .map((t) => t.tool_id);
-          return JSON.stringify(enabled);
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "list_enabled_tools", {}, false
+          );
+          try {
+            const enabled = ctx.enabledTools
+              .filter((t) => t.enabled)
+              .map((t) => t.tool_id);
+            await updateToolCallStatus(ctx.db, record.id, "executed", {
+              tool_ids: enabled,
+            });
+            return JSON.stringify(enabled);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
         },
         {
           name: "list_enabled_tools",
