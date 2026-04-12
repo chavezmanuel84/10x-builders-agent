@@ -5,14 +5,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "get_user_preferences",
     name: "get_user_preferences",
     description: "Returns the current user preferences and agent configuration.",
-    risk: "medium",
+    risk: "low",
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
     id: "list_enabled_tools",
     name: "list_enabled_tools",
     description: "Lists all tools the user has currently enabled.",
-    risk: "medium",
+    risk: "low",
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -133,6 +133,27 @@ export const TOOL_CATALOG: ToolDefinition[] = [
         },
       },
       required: ["title", "start", "end"],
+    },
+  },
+  {
+    id: "bash",
+    name: "bash",
+    description:
+      "Use this tool when you need to execute bash commands and interact with the operating system. " +
+      "This tool executes commands and returns the command output. " +
+      "The execution environment is Linux under WSL2, using bash.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "The bash command to execute" },
+        terminal: {
+          type: "string",
+          description: "Optional correlation id for display only (not a persistent shell session)",
+        },
+        cwd: { type: "string", description: "Optional working directory" },
+      },
+      required: ["prompt"],
     },
   },
 ];

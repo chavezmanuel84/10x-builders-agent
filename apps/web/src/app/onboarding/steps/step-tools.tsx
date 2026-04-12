@@ -64,6 +64,14 @@ const AVAILABLE_TOOLS = [
     risk: "medium" as const,
     requiresIntegration: "google_calendar",
   },
+  {
+    id: "bash",
+    name: "Bash (servidor)",
+    description:
+      "Ejecuta comandos bash en el servidor (WSL2/Linux). Requiere confirmación y BASH_TOOL_ENABLED en el servidor.",
+    risk: "high" as const,
+    requiresIntegration: null,
+  },
 ];
 
 const RISK_LABELS = {

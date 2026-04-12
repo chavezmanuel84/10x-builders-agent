@@ -5,6 +5,7 @@ import { google } from "googleapis";
 import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration, DeferHitlToolResult } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
+import { runBashCommandOnce } from "./bash-exec";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 
 export interface ToolContext {
@@ -167,6 +168,21 @@ export function buildHitlInterruptSummary(
     }
     case "get_user_preferences":
       return "Leer preferencias y configuración del usuario";
+    case "bash": {
+      const raw = typeof args.prompt === "string" ? args.prompt : "";
+      const line = raw.trim().replace(/\s+/g, " ");
+      const max = 160;
+      const cmdPreview = line.length > max ? `${line.slice(0, max)}…` : line;
+      const cwdPart =
+        typeof args.cwd === "string" && args.cwd.trim()
+          ? ` (cwd: ${args.cwd})`
+          : "";
+      const termPart =
+        typeof args.terminal === "string" && args.terminal.trim()
+          ? ` [${args.terminal}]`
+          : "";
+      return `Ejecutar bash: ${cmdPreview || "(vacío)"}${cwdPart}${termPart}`;
+    }
     default: {
       const def = TOOL_CATALOG.find((t) => t.name === toolName);
       return def?.description ?? `Ejecutar: ${toolName}`;
@@ -207,6 +223,22 @@ export async function executeApprovedSideEffect(
   }
   if (toolName.startsWith("github_")) {
     return executeGitHubTool(toolName, args, ctx.githubToken!);
+  }
+
+  if (toolName === "bash") {
+    if (process.env.BASH_TOOL_ENABLED !== "true") {
+      throw new Error(
+        "Bash tool is disabled. Set BASH_TOOL_ENABLED=true on the server to allow execution after approval."
+      );
+    }
+    const prompt = args.prompt;
+    if (typeof prompt !== "string") {
+      throw new Error("bash tool: prompt must be a string");
+    }
+    const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
+    const terminal = typeof args.terminal === "string" ? args.terminal : undefined;
+    const result = await runBashCommandOnce({ prompt, cwd, terminal });
+    return { ...result } as Record<string, unknown>;
   }
 
   throw new Error(`HITL execution not implemented for tool: ${toolName}`);
@@ -604,6 +636,34 @@ export function buildLangChainTools(ctx: ToolContext) {
             end: z.string().describe("End datetime (ISO 8601)"),
             description: z.string().optional().default(""),
             attendees: z.array(z.string()).optional().describe("List of attendee email addresses"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("bash", ctx)) {
+    tools.push(
+      tool(
+        async () =>
+          JSON.stringify({
+            control: "hitl_required",
+            message:
+              "This handler does not execute commands. The agent runs bash only after human approval in executeApprovedSideEffect.",
+          }),
+        {
+          name: "bash",
+          description:
+            "Use this tool when you need to execute bash commands and interact with the operating system. " +
+            "This tool executes commands and returns the command output. " +
+            "The execution environment is Linux under WSL2, using bash.",
+          schema: z.object({
+            prompt: z.string().describe("The bash command to execute"),
+            terminal: z
+              .string()
+              .optional()
+              .describe("Optional correlation id for display only (not a persistent shell session)"),
+            cwd: z.string().optional().describe("Optional working directory"),
           }),
         }
       )

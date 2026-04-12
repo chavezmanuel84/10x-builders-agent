@@ -74,6 +74,7 @@ export function OnboardingWizard({ userId, initialProfile, initialToolSettings }
       "gcal_list_events",
       "gcal_query_events",
       "gcal_create_event",
+      "bash",
     ];
 
     for (const toolId of TOOL_IDS) {

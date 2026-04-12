@@ -23,6 +23,7 @@ const TOOL_IDS = [
   "gcal_list_events",
   "gcal_query_events",
   "gcal_create_event",
+  "bash",
 ];
 
 export function SettingsForm({ userId, profile, toolSettings, telegramLinked, githubConnected, googleCalendarConnected }: Props) {
