@@ -8,8 +8,8 @@ export interface PendingContextCandidate {
 }
 
 interface PendingSignal {
-  pendingField: "visibility" | "confirmation";
-  value: "public" | "private" | "approve" | "reject";
+  pendingField: "visibility";
+  value: "public" | "private";
 }
 
 export type PendingResolutionResult =
@@ -22,13 +22,6 @@ export type PendingResolutionResult =
       payload: ConversationContextPayload;
       normalizedValue: "public" | "private";
       rewrittenMessage: string;
-    }
-  | {
-      kind: "resolve_pending_confirmation";
-      messageId: string;
-      payload: ConversationContextPayload;
-      action: "approve" | "reject";
-      toolCallId: string;
     };
 
 function normalizeText(input: string): string {
@@ -47,12 +40,6 @@ function parsePendingSignal(message: string): PendingSignal | null {
   if (normalized === "privado" || normalized === "privada") {
     return { pendingField: "visibility", value: "private" };
   }
-  if (normalized === "si" || normalized === "ok" || normalized === "confirmo") {
-    return { pendingField: "confirmation", value: "approve" };
-  }
-  if (normalized === "no" || normalized === "cancelar") {
-    return { pendingField: "confirmation", value: "reject" };
-  }
   return null;
 }
 
@@ -70,12 +57,6 @@ function isPendingFieldCompatible(
       payload.context_type === "pending_input" &&
       (field === "visibility" || field === "repo_visibility")
     );
-  }
-
-  if (signal.pendingField === "confirmation") {
-    const field = normalizeText(payload.pending_field ?? "");
-    if (payload.context_type === "pending_confirmation") return true;
-    return field === "confirmation" || field === "approval";
   }
 
   return false;
@@ -132,32 +113,14 @@ export function resolvePendingContextReply(
 
   const selected = newestCompatible[0];
 
-  if (signal.pendingField === "visibility") {
-    return {
-      kind: "resolve_pending_input",
-      messageId: selected.message_id,
-      payload: selected.payload,
-      normalizedValue: signal.value === "public" ? "public" : "private",
-      rewrittenMessage: buildVisibilityRewrittenMessage(
-        selected.payload,
-        signal.value === "public" ? "public" : "private"
-      ),
-    };
-  }
-
-  if (!selected.payload.tool_call_id) {
-    return {
-      kind: "no_match",
-      clarification:
-        "No encuentro una confirmacion activa valida para esa respuesta. Aclara la accion que quieres confirmar.",
-    };
-  }
-
   return {
-    kind: "resolve_pending_confirmation",
+    kind: "resolve_pending_input",
     messageId: selected.message_id,
     payload: selected.payload,
-    action: signal.value === "approve" ? "approve" : "reject",
-    toolCallId: selected.payload.tool_call_id,
+    normalizedValue: signal.value === "public" ? "public" : "private",
+    rewrittenMessage: buildVisibilityRewrittenMessage(
+      selected.payload,
+      signal.value === "public" ? "public" : "private"
+    ),
   };
 }

@@ -12,7 +12,7 @@ const AVAILABLE_TOOLS = [
     id: "get_user_preferences",
     name: "Preferencias del usuario",
     description: "Consulta tu configuración y preferencias.",
-    risk: "low" as const,
+    risk: "medium" as const,
     requiresIntegration: null,
   },
   {

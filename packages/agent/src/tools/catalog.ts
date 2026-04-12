@@ -5,14 +5,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "get_user_preferences",
     name: "get_user_preferences",
     description: "Returns the current user preferences and agent configuration.",
-    risk: "low",
+    risk: "medium",
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
     id: "list_enabled_tools",
     name: "list_enabled_tools",
     description: "Lists all tools the user has currently enabled.",
-    risk: "low",
+    risk: "medium",
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {

@@ -9,8 +9,8 @@ import {
   startNewSession,
   updateMessageContextStatus,
 } from "@agents/db";
-import { resolvePendingContextReply, runAgent } from "@agents/agent";
-import { executeToolCallAction } from "@/lib/tool-call-actions";
+import { resolvePendingContextReply, resumeAgent, runAgent } from "@agents/agent";
+import type { HitlResumeDecision, UserIntegration, UserToolSetting } from "@agents/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -70,6 +70,90 @@ async function answerCallbackQuery(callbackQueryId: string, text: string) {
   });
 }
 
+async function resumeHitlForTelegramUser(
+  db: ReturnType<typeof createServerClient>,
+  userId: string,
+  sessionId: string,
+  decision: HitlResumeDecision
+) {
+  const { data: profile } = await db
+    .from("profiles")
+    .select("agent_system_prompt, timezone")
+    .eq("id", userId)
+    .single();
+  const { data: toolSettings } = await db
+    .from("user_tool_settings")
+    .select("*")
+    .eq("user_id", userId);
+  const { data: integrations } = await db
+    .from("user_integrations")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("status", "active");
+
+  let githubToken: string | undefined;
+  const ghIntegration = (integrations ?? []).find(
+    (i: Record<string, unknown>) => i.provider === "github"
+  );
+  if (ghIntegration && (ghIntegration as Record<string, unknown>).encrypted_tokens) {
+    try {
+      githubToken = decrypt(
+        (ghIntegration as Record<string, unknown>).encrypted_tokens as string
+      );
+    } catch {
+      console.error("Failed to decrypt GitHub token for Telegram user", userId);
+    }
+  }
+  let googleCalendarToken: string | undefined;
+  const gcalIntegration = (integrations ?? []).find(
+    (i: Record<string, unknown>) => i.provider === "google_calendar"
+  );
+  if (gcalIntegration && (gcalIntegration as Record<string, unknown>).encrypted_tokens) {
+    try {
+      googleCalendarToken = decrypt(
+        (gcalIntegration as Record<string, unknown>).encrypted_tokens as string
+      );
+    } catch {
+      console.error("Failed to decrypt GCal token for Telegram user", userId);
+    }
+  }
+
+  return resumeAgent({
+    userId,
+    sessionId,
+    systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+    db,
+    enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
+      id: t.id as string,
+      user_id: t.user_id as string,
+      tool_id: t.tool_id as string,
+      enabled: t.enabled as boolean,
+      config_json: (t.config_json as Record<string, unknown>) ?? {},
+    })) as UserToolSetting[],
+    integrations: (integrations ?? []).map((i: Record<string, unknown>) => ({
+      id: i.id as string,
+      user_id: i.user_id as string,
+      provider: i.provider as string,
+      scopes: (i.scopes as string[]) ?? [],
+      status: i.status as "active" | "revoked" | "expired",
+      created_at: i.created_at as string,
+    })) as UserIntegration[],
+    githubToken,
+    googleCalendarToken,
+    userTimezone: (profile?.timezone as string) ?? "UTC",
+    decision,
+  });
+}
+
+const hitlKeyboard = {
+  inline_keyboard: [
+    [
+      { text: "Aprobar", callback_data: "hitl_approve" },
+      { text: "Cancelar", callback_data: "hitl_reject" },
+    ],
+  ],
+};
+
 export async function POST(request: Request) {
   const secret = request.headers.get("x-telegram-bot-api-secret-token");
   if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
@@ -82,7 +166,7 @@ export async function POST(request: Request) {
   // Handle callback queries (confirmation buttons)
   if (update.callback_query) {
     const cb = update.callback_query;
-    const [action, toolCallId] = cb.data.split(":");
+    const action = cb.data;
     const { data: telegramAccount } = await db
       .from("telegram_accounts")
       .select("user_id")
@@ -107,32 +191,37 @@ export async function POST(request: Request) {
     }
     const expectedSessionId = expectedSession.id;
 
-    if (action === "approve" && toolCallId) {
+    if (action === "hitl_approve") {
       await answerCallbackQuery(cb.id, "Aprobado");
-      const result = await executeToolCallAction({
+      const result = await resumeHitlForTelegramUser(
         db,
-        toolCallId,
-        action: "approve",
-        expectedUserId: telegramAccount.user_id,
+        telegramAccount.user_id,
         expectedSessionId,
-      });
-      if (!result.ok) {
-        await sendTelegramMessage(cb.message.chat.id, result.error ?? "No pude aprobar la accion.");
-      } else if (result.result) {
-        await sendTelegramMessage(cb.message.chat.id, `Accion ejecutada: ${JSON.stringify(result.result)}`);
+        { decision: "approve" }
+      );
+      if (result.error) {
+        await sendTelegramMessage(cb.message.chat.id, result.error);
+      } else if (result.pendingConfirmation) {
+        await sendTelegramMessage(cb.message.chat.id, result.pendingConfirmation.message, hitlKeyboard);
       } else {
-        await sendTelegramMessage(cb.message.chat.id, result.message ?? "Accion aprobada.");
+        await sendTelegramMessage(cb.message.chat.id, result.response);
       }
-    } else if (action === "reject" && toolCallId) {
+    } else if (action === "hitl_reject") {
       await answerCallbackQuery(cb.id, "Rechazado");
-      const result = await executeToolCallAction({
+      const result = await resumeHitlForTelegramUser(
         db,
-        toolCallId,
-        action: "reject",
-        expectedUserId: telegramAccount.user_id,
+        telegramAccount.user_id,
         expectedSessionId,
-      });
-      await sendTelegramMessage(cb.message.chat.id, result.message ?? "Accion cancelada.");
+        {
+          decision: "reject",
+          message: "Acción cancelada desde Telegram.",
+        }
+      );
+      if (result.error) {
+        await sendTelegramMessage(cb.message.chat.id, result.error);
+      } else {
+        await sendTelegramMessage(cb.message.chat.id, result.response || "Accion cancelada.");
+      }
     }
 
     return NextResponse.json({ ok: true });
@@ -286,26 +375,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    if (pendingResolution.kind === "resolve_pending_confirmation") {
-      await addMessage(db, session.id, "user", text);
-      const confirmResult = await executeToolCallAction({
-        db,
-        toolCallId: pendingResolution.toolCallId,
-        action: pendingResolution.action,
-        expectedUserId: userId,
-        expectedSessionId: session.id,
-      });
-      const responseText =
-        confirmResult.result
-          ? `Accion ejecutada: ${JSON.stringify(confirmResult.result)}`
-          : (confirmResult.message ??
-            confirmResult.error ??
-            "No pude resolver la confirmacion. Aclara la accion que deseas.");
-      await addMessage(db, session.id, "assistant", responseText);
-      await sendTelegramMessage(chatId, responseText);
-      return NextResponse.json({ ok: true });
-    }
-
     let contextInstruction: string | undefined;
     let messageForAgent = text;
     if (pendingResolution.kind === "resolve_pending_input") {
@@ -344,16 +413,7 @@ export async function POST(request: Request) {
 
     if (result.pendingConfirmation) {
       const pc = result.pendingConfirmation;
-      const approveData = `approve:${pc.toolCallId}`;
-      const rejectData = `reject:${pc.toolCallId}`;
-      await sendTelegramMessage(chatId, pc.message, {
-        inline_keyboard: [
-          [
-            { text: "Aprobar", callback_data: approveData },
-            { text: "Cancelar", callback_data: rejectData },
-          ],
-        ],
-      });
+      await sendTelegramMessage(chatId, pc.message, hitlKeyboard);
     } else {
       await sendTelegramMessage(chatId, result.response);
     }

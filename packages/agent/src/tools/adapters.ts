@@ -3,8 +3,8 @@ import { z } from "zod";
 import { Octokit } from "@octokit/rest";
 import { google } from "googleapis";
 import type { DbClient } from "@agents/db";
-import type { UserToolSetting, UserIntegration } from "@agents/types";
-import { TOOL_CATALOG, toolRequiresConfirmation } from "./catalog";
+import type { UserToolSetting, UserIntegration, DeferHitlToolResult } from "@agents/types";
+import { TOOL_CATALOG } from "./catalog";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 
 export interface ToolContext {
@@ -100,6 +100,33 @@ export async function executeGitHubTool(
       });
       return { repo_url: data.html_url, full_name: data.full_name };
     }
+    case "github_list_repos": {
+      const { data } = await octokit.repos.listForAuthenticatedUser({
+        per_page: (args.per_page as number) ?? 10,
+        sort: "updated",
+      });
+      const repos = data.map((r) => ({
+        full_name: r.full_name,
+        description: r.description,
+        html_url: r.html_url,
+        private: r.private,
+      }));
+      return { repos };
+    }
+    case "github_list_issues": {
+      const { data } = await octokit.issues.listForRepo({
+        owner: args.owner as string,
+        repo: args.repo as string,
+        state: (args.state as "open" | "closed" | "all") ?? "open",
+      });
+      const issues = data.map((i) => ({
+        number: i.number,
+        title: i.title,
+        state: i.state,
+        html_url: i.html_url,
+      }));
+      return { issues };
+    }
     default:
       throw new Error(`Unknown GitHub tool: ${toolName}`);
   }
@@ -117,6 +144,91 @@ function getGoogleCalendarClient(tokenJson: string) {
     expiry_date: tokens.expiry_date,
   });
   return google.calendar({ version: "v3", auth: oauth2Client });
+}
+
+/**
+ * Runs a side-effecting GitHub or Google Calendar tool after HITL approval (graph tools node).
+ */
+/** User-facing summary when pausing for HITL (aligned with catalog / former defer_hitl copy). */
+export function buildHitlInterruptSummary(
+  toolName: string,
+  args: Record<string, unknown>
+): string {
+  switch (toolName) {
+    case "github_create_issue":
+      return `Crear issue "${args.title}" en ${args.owner}/${args.repo}`;
+    case "github_create_repo":
+      return `Crear repositorio "${args.name}"${args.private ? " (privado)" : ""}`;
+    case "gcal_create_event": {
+      const attendees = (args.attendees as string[] | undefined)?.length
+        ? ` con ${(args.attendees as string[]).join(", ")}`
+        : "";
+      return `Crear evento "${args.title}" (${args.start} → ${args.end})${attendees}`;
+    }
+    case "get_user_preferences":
+      return "Leer preferencias y configuración del usuario";
+    default: {
+      const def = TOOL_CATALOG.find((t) => t.name === toolName);
+      return def?.description ?? `Ejecutar: ${toolName}`;
+    }
+  }
+}
+
+/**
+ * Runs the real side effect after HITL approval (graph tools node).
+ * Does not insert tool_calls rows; caller owns audit `record` updates.
+ */
+export async function executeApprovedSideEffect(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<Record<string, unknown>> {
+  if (toolName === "get_user_preferences") {
+    const { getProfile } = await import("@agents/db");
+    const profile = await getProfile(ctx.db, ctx.userId);
+    return {
+      name: profile.name,
+      timezone: profile.timezone,
+      language: profile.language,
+      agent_name: profile.agent_name,
+    };
+  }
+  if (toolName === "list_enabled_tools") {
+    const enabled = ctx.enabledTools.filter((t) => t.enabled).map((t) => t.tool_id);
+    return { tool_ids: enabled };
+  }
+  if (toolName.startsWith("gcal_")) {
+    return executeGoogleCalendarTool(
+      toolName,
+      args,
+      ctx.googleCalendarToken!,
+      ctx.userTimezone
+    );
+  }
+  if (toolName.startsWith("github_")) {
+    return executeGitHubTool(toolName, args, ctx.githubToken!);
+  }
+
+  throw new Error(`HITL execution not implemented for tool: ${toolName}`);
+}
+
+export async function executeRiskyIntegrationTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<Record<string, unknown>> {
+  if (toolName.startsWith("github_")) {
+    return executeGitHubTool(toolName, args, ctx.githubToken!);
+  }
+  if (toolName.startsWith("gcal_")) {
+    return executeGoogleCalendarTool(
+      toolName,
+      args,
+      ctx.googleCalendarToken!,
+      ctx.userTimezone
+    );
+  }
+  throw new Error(`Unknown integration tool: ${toolName}`);
 }
 
 export async function executeGoogleCalendarTool(
@@ -357,26 +469,12 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const needsConfirm = toolRequiresConfirmation("github_create_issue");
-          const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_create_issue", input, needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Crear issue "${input.title}" en ${input.owner}/${input.repo}`,
-            });
-          }
-          try {
-            const result = await executeGitHubTool("github_create_issue", input, ctx.githubToken!);
-            await updateToolCallStatus(ctx.db, record.id, "executed", result);
-            return JSON.stringify(result);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : "Unknown error";
-            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
-            return JSON.stringify({ error: message });
-          }
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: `Crear issue "${input.title}" en ${input.owner}/${input.repo}`,
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
         },
         {
           name: "github_create_issue",
@@ -396,26 +494,12 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const needsConfirm = toolRequiresConfirmation("github_create_repo");
-          const record = await createToolCall(
-            ctx.db, ctx.sessionId, "github_create_repo", input, needsConfirm
-          );
-          if (needsConfirm) {
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Crear repositorio "${input.name}"${input.private ? " (privado)" : ""}`,
-            });
-          }
-          try {
-            const result = await executeGitHubTool("github_create_repo", input, ctx.githubToken!);
-            await updateToolCallStatus(ctx.db, record.id, "executed", result);
-            return JSON.stringify(result);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : "Unknown error";
-            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
-            return JSON.stringify({ error: message });
-          }
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: `Crear repositorio "${input.name}"${input.private ? " (privado)" : ""}`,
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
         },
         {
           name: "github_create_repo",
@@ -500,32 +584,15 @@ export function buildLangChainTools(ctx: ToolContext) {
     tools.push(
       tool(
         async (input) => {
-          const needsConfirm = toolRequiresConfirmation("gcal_create_event");
-          const record = await createToolCall(
-            ctx.db, ctx.sessionId, "gcal_create_event", input, needsConfirm
-          );
-          if (needsConfirm) {
-            const attendeeInfo = input.attendees?.length
-              ? ` con ${input.attendees.join(", ")}`
-              : "";
-            return JSON.stringify({
-              pending_confirmation: true,
-              tool_call_id: record.id,
-              message: `Crear evento "${input.title}" (${input.start} → ${input.end})${attendeeInfo}`,
-            });
-          }
-          try {
-            const result = await executeGoogleCalendarTool(
-              "gcal_create_event", input, ctx.googleCalendarToken!, ctx.userTimezone
-            );
-            await updateToolCallStatus(ctx.db, record.id, "executed", result);
-            return JSON.stringify(result);
-          } catch (err) {
-            console.error("[gcal] gcal_create_event failed:", err);
-            const message = err instanceof Error ? err.message : "Unknown error";
-            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
-            return JSON.stringify({ error: message });
-          }
+          const attendeeInfo = input.attendees?.length
+            ? ` con ${input.attendees.join(", ")}`
+            : "";
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: `Crear evento "${input.title}" (${input.start} → ${input.end})${attendeeInfo}`,
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
         },
         {
           name: "gcal_create_event",

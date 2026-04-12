@@ -155,7 +155,7 @@ describe("resolvePendingContextReply", () => {
     expect(result.kind).toBe("no_match");
   });
 
-  it("respuesta ambigua en sesion nueva no ejecuta pending_confirmation viejo", () => {
+  it("sesion distinta no cruza contextos aunque haya pending_confirmation activo", () => {
     const contexts: PendingContextCandidate[] = [
       makeContext({
         session_id: "session-old",
@@ -169,8 +169,25 @@ describe("resolvePendingContextReply", () => {
       }),
     ];
 
-    const result = resolvePendingContextReply("si", "session-new", contexts);
+    const result = resolvePendingContextReply("publico", "session-new", contexts);
     expect(result.kind).toBe("no_match");
+  });
+
+  it("confirmacion por texto ya no se resuelve aqui (si -> no_signal)", () => {
+    const contexts: PendingContextCandidate[] = [
+      makeContext({
+        payload: {
+          context_type: "pending_confirmation",
+          context_status: "active",
+          tool_name: "github_create_issue",
+          pending_field: "confirmation",
+          tool_call_id: "tc-1",
+        },
+      }),
+    ];
+
+    const result = resolvePendingContextReply("si", "session-web", contexts);
+    expect(result.kind).toBe("no_signal");
   });
 
   it("contextos cerrados no se seleccionan (approved/rejected/executed/failed)", () => {
@@ -213,7 +230,7 @@ describe("resolvePendingContextReply", () => {
       }),
     ];
 
-    const result = resolvePendingContextReply("si", "session-web", contexts);
+    const result = resolvePendingContextReply("publico", "session-web", contexts);
     expect(result.kind).toBe("no_match");
   });
 });

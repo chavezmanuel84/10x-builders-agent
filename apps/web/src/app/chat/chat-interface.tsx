@@ -14,6 +14,7 @@ interface Message {
   role: string;
   content: string;
   created_at?: string;
+  structured_payload?: unknown;
 }
 
 interface Confirmation {
@@ -31,6 +32,34 @@ interface Props {
 }
 
 const MARKDOWN_LINK_REGEX = /\[([^\]]*)\]\(([^)\s]+)\)/g;
+
+/** Restore HITL buttons after reload from the last assistant row's structured_payload. */
+function extractPendingConfirmationFromMessages(
+  messages: Message[]
+): Confirmation | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== "assistant") continue;
+    const m = messages[i];
+    const p = m.structured_payload as Record<string, unknown> | undefined;
+    if (
+      p &&
+      typeof p === "object" &&
+      p.context_type === "pending_confirmation" &&
+      p.context_status === "active" &&
+      typeof p.tool_call_id === "string" &&
+      typeof p.tool_name === "string"
+    ) {
+      return {
+        toolCallId: p.tool_call_id,
+        toolName: p.tool_name,
+        message: m.content,
+        args: (p.entity as Record<string, unknown>) ?? {},
+      };
+    }
+    return null;
+  }
+  return null;
+}
 
 function getSafeHref(url: string): string | null {
   const trimmed = url.trim();
@@ -101,7 +130,9 @@ export function ChatInterface({
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pendingConfirm, setPendingConfirm] = useState<Confirmation | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<Confirmation | null>(() =>
+    extractPendingConfirmationFromMessages(initialMessages)
+  );
   const [confirming, setConfirming] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(initialHasMoreOlder);
@@ -215,6 +246,7 @@ export function ChatInterface({
           },
         ]);
       } else if (data.response) {
+        setPendingConfirm(null);
         shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
@@ -241,34 +273,33 @@ export function ChatInterface({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          toolCallId: pendingConfirm.toolCallId,
           action,
           sessionId: activeSessionId,
         }),
       });
       const data = await res.json();
 
-      if (action === "approve" && data.result) {
-        shouldAutoScrollRef.current = true;
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: `Acción ejecutada: ${JSON.stringify(data.result)}`,
-          },
-        ]);
-      } else if (action === "reject") {
-        shouldAutoScrollRef.current = true;
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: "Acción cancelada." },
-        ]);
-      } else if (data.error) {
+      if (data.error) {
         shouldAutoScrollRef.current = true;
         setMessages((prev) => [
           ...prev,
           { role: "assistant", content: `Error: ${data.error}` },
         ]);
+        setPendingConfirm(null);
+      } else if (data.pendingConfirmation) {
+        shouldAutoScrollRef.current = true;
+        setPendingConfirm(data.pendingConfirmation);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.pendingConfirmation.message,
+          },
+        ]);
+      } else if (data.response) {
+        shouldAutoScrollRef.current = true;
+        setMessages((prev) => [...prev, { role: "assistant", content: data.response }]);
+        setPendingConfirm(null);
       }
     } catch {
       shouldAutoScrollRef.current = true;
@@ -276,8 +307,8 @@ export function ChatInterface({
         ...prev,
         { role: "assistant", content: "Error al confirmar la acción." },
       ]);
-    } finally {
       setPendingConfirm(null);
+    } finally {
       setConfirming(false);
     }
   }

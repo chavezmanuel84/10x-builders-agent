@@ -89,24 +89,27 @@ agents/
 4. Se cargan `profile`, `user_tool_settings` e `integrations`.
 5. Se filtran las tools disponibles (allowlist + integración activa).
 6. Se invoca `runAgent()`:
-   - Se construye el historial (últimos 30 mensajes de la sesión).
+   - **Checkpointer Postgres** (`@langchain/langgraph-checkpoint-postgres`, schema `langgraph` por defecto) con `thread_id = session_id`; si no hay `DATABASE_URL`, cae en `MemorySaver` (solo un proceso).
+   - Primera ejecución del hilo: se hidrata el estado con los últimos 30 mensajes de `agent_messages` + system + mensaje nuevo. Siguientes turnos: solo el delta (mensaje usuario + opcional `contextInstruction`).
    - LangGraph ejecuta el grafo: `agent → [tools] → agent` (máx 6 iteraciones).
-   - Si una tool tiene riesgo medio/alto, devuelve `pending_confirmation` en lugar de ejecutar.
-7. Se persisten los mensajes (user + assistant) en `agent_messages`.
+   - Tools de riesgo medio/alto devuelven `defer_hitl` desde el handler; el nodo `tools` llama a `interrupt()`, persiste auditoría en `tool_calls` y espera `resumeAgent()` vía `Command({ resume })` (web `/api/chat/confirm`, Telegram `hitl_approve` / `hitl_reject`). **No** se usa `tool_calls` como fuente de verdad para reanudar; si no hay interrupción pendiente en el checkpoint, se responde error seguro.
+7. Se persisten los mensajes (user + assistant) en `agent_messages` (`structured_payload` para UX de HITL).
 8. Se devuelve la respuesta al canal.
 
 ## LangGraph: grafo simplificado
 
-- **StateGraph** con dos nodos: `agent` (invoca modelo con tools) y `tools` (ejecuta tool calls).
+- **StateGraph** con dos nodos: `agent` (invoca modelo con tools) y `tools` (ejecuta tool calls + HITL con `interrupt` / `Command`).
 - **Arista condicional** desde `agent`: si hay tool calls → `tools` → `agent`; si no → `__end__`.
-- **MemorySaver** como checkpointer (thread_id = session_id).
+- **PostgresSaver** cuando hay `DATABASE_URL` / `LANGGRAPH_DATABASE_URL` (tablas en schema `langgraph` salvo `LANGGRAPH_CHECKPOINT_SCHEMA`); si no, **MemorySaver** en desarrollo.
+- **thread_id** = `agent_sessions.id`.
 - Máximo 6 iteraciones de tool para evitar loops.
 
 ## LangChain: qué usamos
 
 - `@langchain/core`: `HumanMessage`, `AIMessage`, `SystemMessage`, `ToolMessage`, `tool()`.
 - `@langchain/openai`: `ChatOpenAI` con `baseURL` apuntando a OpenRouter.
-- `@langchain/langgraph`: `StateGraph`, `Annotation`, `MemorySaver`, `END`.
+- `@langchain/langgraph`: `StateGraph`, `Annotation`, `interrupt`, `Command`, `MemorySaver`, `END`.
+- `@langchain/langgraph-checkpoint-postgres`: `PostgresSaver` (persistencia de HITL).
 
 ## Modelo de datos
 
@@ -120,7 +123,7 @@ Todas con **RLS habilitado** y políticas por `user_id` desde el día 1.
 
 - **RLS** en toda tabla con datos de usuario.
 - **Allowlist de tools**: solo se montan las que el usuario habilitó en onboarding/ajustes Y para las que tiene integración activa.
-- **Confirmación humana**: tools de riesgo medio/alto generan `pending_confirmation` en lugar de ejecutar. En web se muestra prompt; en Telegram, botones inline.
+- **Confirmación humana**: tools de riesgo medio/alto pasan por `interrupt` en LangGraph; la UI usa `structured_payload` / botones; la reanudación es siempre vía checkpoint + `Command(resume)`, no ejecutando desde filas `tool_calls`.
 - **Tokens OAuth**: campo `encrypted_tokens` en `user_integrations` (cifrado en aplicación).
 - **Budget**: `budget_tokens_limit` por sesión para evitar costes descontrolados.
 

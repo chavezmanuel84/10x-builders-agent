@@ -9,7 +9,6 @@ import {
   updateMessageContextStatus,
 } from "@agents/db";
 import { resolvePendingContextReply, runAgent } from "@agents/agent";
-import { executeToolCallAction } from "@/lib/tool-call-actions";
 
 export async function POST(request: Request) {
   try {
@@ -87,30 +86,6 @@ export async function POST(request: Request) {
       await addMessage(db, session.id, "assistant", pendingResolution.clarification);
       return NextResponse.json({
         response: pendingResolution.clarification,
-        pendingConfirmation: null,
-        toolCalls: [],
-        sessionId: session.id,
-      });
-    }
-
-    if (pendingResolution.kind === "resolve_pending_confirmation") {
-      await addMessage(db, session.id, "user", message);
-      const confirmResult = await executeToolCallAction({
-        db,
-        toolCallId: pendingResolution.toolCallId,
-        action: pendingResolution.action,
-        expectedUserId: user.id,
-        expectedSessionId: session.id,
-      });
-      const responseText =
-        confirmResult.result
-          ? `Accion ejecutada: ${JSON.stringify(confirmResult.result)}`
-          : (confirmResult.message ??
-            confirmResult.error ??
-            "No pude resolver la confirmacion. Aclara la accion que deseas.");
-      await addMessage(db, session.id, "assistant", responseText);
-      return NextResponse.json({
-        response: responseText,
         pendingConfirmation: null,
         toolCalls: [],
         sessionId: session.id,

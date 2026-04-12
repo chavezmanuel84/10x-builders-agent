@@ -103,8 +103,21 @@ export interface ToolDefinition {
 }
 
 export interface PendingConfirmation {
+  /** Audit row id in `tool_calls` (display / correlation only; not used for resume). */
   toolCallId: string;
   toolName: string;
   message: string;
+  args: Record<string, unknown>;
+}
+
+/** Payload passed to LangGraph `Command({ resume })` for HITL tool approval. */
+export type HitlResumeDecision =
+  | { decision: "approve" }
+  | { decision: "reject"; message: string };
+
+/** Marker returned by LangChain tool handlers that require human approval (parsed in graph tools node). */
+export interface DeferHitlToolResult {
+  defer_hitl: true;
+  summary: string;
   args: Record<string, unknown>;
 }

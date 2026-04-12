@@ -55,7 +55,7 @@ export async function GET(request: Request) {
 
     let query = supabase
       .from("agent_messages")
-      .select("id, role, content, created_at")
+      .select("id, role, content, created_at, structured_payload")
       .eq("session_id", sessionId)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
