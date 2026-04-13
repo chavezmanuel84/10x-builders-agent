@@ -71,9 +71,13 @@ export function OnboardingWizard({ userId, initialProfile, initialToolSettings }
       "github_list_repos",
       "github_list_issues",
       "github_create_issue",
+      "github_create_repo",
       "gcal_list_events",
       "gcal_query_events",
       "gcal_create_event",
+      "read_file",
+      "write_file",
+      "edit_file",
       "bash",
     ];
 

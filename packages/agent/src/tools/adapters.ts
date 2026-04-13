@@ -6,6 +6,7 @@ import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration, DeferHitlToolResult } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
 import { runBashCommandOnce } from "./bash-exec";
+import { readFileContents, writeFileContents, editFileContents } from "./file-ops";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 
 export interface ToolContext {
@@ -166,6 +167,21 @@ export function buildHitlInterruptSummary(
         : "";
       return `Crear evento "${args.title}" (${args.start} → ${args.end})${attendees}`;
     }
+    case "write_file": {
+      const bytesEstimate = Buffer.byteLength(
+        typeof args.content === "string" ? args.content : "",
+        "utf8"
+      );
+      return `Crear archivo nuevo: ${args.path} (${bytesEstimate} bytes)`;
+    }
+    case "edit_file": {
+      const MAX = 120;
+      const truncate = (s: string) =>
+        s.length > MAX ? `${s.slice(0, MAX)}…` : s;
+      const oldPreview = truncate(typeof args.old_string === "string" ? args.old_string : "");
+      const newPreview = truncate(typeof args.new_string === "string" ? args.new_string : "");
+      return `Editar ${args.path} — reemplazar:\n  « ${oldPreview} »\n  → « ${newPreview} »`;
+    }
     case "get_user_preferences":
       return "Leer preferencias y configuración del usuario";
     case "bash": {
@@ -213,6 +229,37 @@ export async function executeApprovedSideEffect(
     const enabled = ctx.enabledTools.filter((t) => t.enabled).map((t) => t.tool_id);
     return { tool_ids: enabled };
   }
+
+  if (toolName === "write_file") {
+    const filePath = args.path;
+    const content = args.content;
+    if (typeof filePath !== "string") {
+      throw new Error("write_file: path must be a string");
+    }
+    if (typeof content !== "string") {
+      throw new Error("write_file: content must be a string");
+    }
+    const result = await writeFileContents(filePath, content);
+    return { ...result } as Record<string, unknown>;
+  }
+
+  if (toolName === "edit_file") {
+    const filePath = args.path;
+    const oldString = args.old_string;
+    const newString = args.new_string;
+    if (typeof filePath !== "string") {
+      throw new Error("edit_file: path must be a string");
+    }
+    if (typeof oldString !== "string") {
+      throw new Error("edit_file: old_string must be a string");
+    }
+    if (typeof newString !== "string") {
+      throw new Error("edit_file: new_string must be a string");
+    }
+    const result = await editFileContents(filePath, oldString, newString);
+    return { ...result } as Record<string, unknown>;
+  }
+
   if (toolName.startsWith("gcal_")) {
     return executeGoogleCalendarTool(
       toolName,
@@ -642,6 +689,100 @@ export function buildLangChainTools(ctx: ToolContext) {
     );
   }
 
+  if (isToolAvailable("read_file", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "read_file", input, false
+          );
+          try {
+            const result = await readFileContents(input.path, input.offset, input.limit);
+            await updateToolCallStatus(ctx.db, record.id, "executed", { ...result });
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "read_file",
+          description:
+            "Use this tool to read the exact, literal content of a file on disk — including source code, config files, or any text file. " +
+            "Do NOT use bash just to read a file (e.g. cat, head); use read_file instead. " +
+            "Use bash only when you need shell features such as piping, globbing, or command substitution. " +
+            "Supports optional offset (1-indexed line number to start from) and limit (max lines to return) for large files; omit both to read the whole file. " +
+            "Call this tool before any write or edit operation to verify the current state of the file.",
+          schema: z.object({
+            path: z.string().describe("Absolute or relative path to the file to read"),
+            offset: z.number().optional().describe("1-indexed line number to start reading from (optional)"),
+            limit: z.number().optional().describe("Maximum number of lines to return (optional)"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("write_file", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: buildHitlInterruptSummary("write_file", input as Record<string, unknown>),
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
+        },
+        {
+          name: "write_file",
+          description:
+            "Use this tool to create a brand-new file with the given content. " +
+            "This tool is ONLY for files that do not yet exist on disk — it will refuse to overwrite an existing file. " +
+            "To update an existing file use edit_file instead. " +
+            "Requires human confirmation before the file is written. " +
+            "Before calling this tool, verify the parent directory exists and that the file does not already exist " +
+            "(use read_file on the target path — a not-found error confirms it is safe to create).",
+          schema: z.object({
+            path: z.string().describe("Absolute or relative path of the new file to create"),
+            content: z.string().describe("Full text content to write into the new file"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("edit_file", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: buildHitlInterruptSummary("edit_file", input as Record<string, unknown>),
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
+        },
+        {
+          name: "edit_file",
+          description:
+            "Use this tool to replace exactly one occurrence of a specific string inside an existing file. " +
+            "This is the correct tool for targeted code edits: replace a function body, update a config value, fix a bug. " +
+            "Do NOT use bash with sed/awk to edit files — use edit_file instead. " +
+            "Before calling, always call read_file first to confirm the exact current content and copy the precise substring for old_string. " +
+            "The match is literal and case-sensitive; old_string must appear exactly once in the file — zero or multiple matches abort the operation without any changes. " +
+            "Requires human confirmation before the file is modified.",
+          schema: z.object({
+            path: z.string().describe("Absolute or relative path to the file to edit"),
+            old_string: z.string().describe("The exact substring to find (must match exactly once, case-sensitive)"),
+            new_string: z.string().describe("The string to replace old_string with"),
+          }),
+        }
+      )
+    );
+  }
+
   if (isToolAvailable("bash", ctx)) {
     tools.push(
       tool(
@@ -654,8 +795,11 @@ export function buildLangChainTools(ctx: ToolContext) {
         {
           name: "bash",
           description:
-            "Use this tool when you need to execute bash commands and interact with the operating system. " +
-            "This tool executes commands and returns the command output. " +
+            "Use this tool to execute bash commands that require OS-level features: piping, process management, " +
+            "environment inspection, package installation, running scripts, etc. " +
+            "Do NOT use bash tool to read files (use read_file instead of cat/head/tail). " +
+            "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
+            "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
             "The execution environment is Linux under WSL2, using bash.",
           schema: z.object({
             prompt: z.string().describe("The bash command to execute"),

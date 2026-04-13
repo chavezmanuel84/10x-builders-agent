@@ -44,6 +44,13 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: "github",
   },
   {
+    id: "github_create_repo",
+    name: "GitHub: crear repositorio",
+    description: "Crea un repositorio nuevo en GitHub (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: "github",
+  },
+  {
     id: "gcal_list_events",
     name: "Google Calendar: listar eventos",
     description: "Lista tus eventos de calendario para una fecha o para hoy.",
@@ -63,6 +70,27 @@ const AVAILABLE_TOOLS = [
     description: "Crea un evento en Google Calendar (requiere confirmación).",
     risk: "medium" as const,
     requiresIntegration: "google_calendar",
+  },
+  {
+    id: "read_file",
+    name: "Leer archivo",
+    description: "Lee el contenido exacto de un archivo en el servidor.",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "write_file",
+    name: "Crear archivo",
+    description: "Crea un archivo nuevo en el servidor (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "edit_file",
+    name: "Editar archivo",
+    description: "Reemplaza una cadena exacta dentro de un archivo existente (requiere confirmación).",
+    risk: "high" as const,
+    requiresIntegration: null,
   },
   {
     id: "bash",

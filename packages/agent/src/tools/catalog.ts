@@ -136,11 +136,75 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "read_file",
+    name: "read_file",
+    description:
+      "Use this tool to read the exact, literal content of a file on disk — including source code, config files, or any text file. " +
+      "Do NOT use bash just to read a file (e.g. cat, head); use read_file instead. " +
+      "Use bash only when you need shell features such as piping, globbing, or command substitution. " +
+      "Supports optional offset (1-indexed line number to start from) and limit (max lines to return) for large files; omit both to read the whole file. " +
+      "Call this tool before any write or edit operation to verify the current state of the file.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative path to the file to read" },
+        offset: { type: "number", description: "1-indexed line number to start reading from (optional)" },
+        limit: { type: "number", description: "Maximum number of lines to return (optional)" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    id: "write_file",
+    name: "write_file",
+    description:
+      "Use this tool to create a brand-new file with the given content. " +
+      "This tool is ONLY for files that do not yet exist on disk — it will refuse to overwrite an existing file. " +
+      "To update an existing file use edit_file instead. " +
+      "Requires human confirmation before the file is written. " +
+      "Before calling this tool, verify the parent directory exists and that the file does not already exist " +
+      "(use read_file on the target path — a not-found error confirms it is safe to create).",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative path of the new file to create" },
+        content: { type: "string", description: "Full text content to write into the new file" },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    id: "edit_file",
+    name: "edit_file",
+    description:
+      "Use this tool to replace exactly one occurrence of a specific string inside an existing file. " +
+      "This is the correct tool for targeted code edits: replace a function body, update a config value, fix a bug. " +
+      "Do NOT use bash with sed/awk to edit files — use edit_file instead. " +
+      "Before calling, always call read_file first to confirm the exact current content and copy the precise substring for old_string. " +
+      "The match is literal and case-sensitive; old_string must appear exactly once in the file — zero or multiple matches abort the operation without any changes. " +
+      "Requires human confirmation before the file is modified.",
+    risk: "high",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative path to the file to edit" },
+        old_string: { type: "string", description: "The exact substring to find (must match exactly once, case-sensitive)" },
+        new_string: { type: "string", description: "The string to replace old_string with" },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:
-      "Use this tool when you need to execute bash commands and interact with the operating system. " +
-      "This tool executes commands and returns the command output. " +
+      "Use this tool to execute bash commands that require OS-level features: piping, process management, " +
+      "environment inspection, package installation, running scripts, etc. " +
+      "Do NOT use bash tool to read files (use read_file instead of cat/head/tail). " +
+      "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
+      "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
       "The execution environment is Linux under WSL2, using bash.",
     risk: "high",
     parameters_schema: {
