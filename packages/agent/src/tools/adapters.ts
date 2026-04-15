@@ -433,38 +433,6 @@ export function buildLangChainTools(ctx: ToolContext) {
     );
   }
 
-  if (isToolAvailable("get_current_path", ctx)) {
-    tools.push(
-      tool(
-        async () => {
-          const record = await createToolCall(
-            ctx.db, ctx.sessionId, "get_current_path", {}, false
-          );
-          try {
-            const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd();
-            const result = {
-              workspace_root: workspaceRoot,
-              current_directory: workspaceRoot,
-            };
-            await updateToolCallStatus(ctx.db, record.id, "executed", result);
-            return JSON.stringify(result);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : "Unknown error";
-            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
-            return JSON.stringify({ error: message });
-          }
-        },
-        {
-          name: "get_current_path",
-          description:
-            "Returns the agent's workspace root and effective working directory. " +
-            "Use this instead of running bash pwd to answer 'what is my current path?'.",
-          schema: z.object({}),
-        }
-      )
-    );
-  }
-
   if (isToolAvailable("list_enabled_tools", ctx)) {
     tools.push(
       tool(

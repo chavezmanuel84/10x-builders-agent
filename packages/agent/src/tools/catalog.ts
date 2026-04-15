@@ -8,16 +8,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     risk: "low",
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
-  {
-    id: "get_current_path",
-    name: "get_current_path",
-    description:
-      "Returns the agent's workspace root and effective working directory. " +
-      "Use this instead of running bash pwd to answer questions like 'what is my current path?' or 'where am I?'. " +
-      "Does not require confirmation and does not execute any shell command.",
-    risk: "low",
-    parameters_schema: { type: "object", properties: {}, required: [] },
-  },
+
   {
     id: "list_enabled_tools",
     name: "list_enabled_tools",
