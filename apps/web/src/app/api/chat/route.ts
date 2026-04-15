@@ -128,6 +128,19 @@ export async function POST(request: Request) {
       contextInstruction,
     });
 
+    if (result.error === "pending_hitl") {
+      return NextResponse.json(
+        {
+          error: "pending_confirmation_required",
+          pendingConfirmation: result.pendingConfirmation,
+          response: null,
+          toolCalls: [],
+          sessionId: session.id,
+        },
+        { status: 409 }
+      );
+    }
+
     return NextResponse.json({
       response: result.pendingConfirmation ? null : result.response,
       pendingConfirmation: result.pendingConfirmation,

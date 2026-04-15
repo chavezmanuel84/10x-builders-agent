@@ -13,6 +13,13 @@ export async function getLangGraphCheckpointer(): Promise<unknown> {
     "";
 
   if (!conn) {
+    console.error(
+      "[checkpointer] WARNING: Neither LANGGRAPH_DATABASE_URL nor DATABASE_URL is set. " +
+        "Falling back to MemorySaver (in-process only). " +
+        "HITL confirmations will NOT survive process restarts — resumeAgent() will return 409 " +
+        "in any environment where requests are served by separate processes (e.g. serverless). " +
+        "Set LANGGRAPH_DATABASE_URL or DATABASE_URL to enable persistent HITL."
+    );
     return new MemorySaver();
   }
 

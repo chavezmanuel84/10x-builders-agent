@@ -24,6 +24,7 @@ const TOOL_IDS = [
   "gcal_query_events",
   "gcal_create_event",
   "read_file",
+  "list_directory",
   "write_file",
   "edit_file",
   "bash",

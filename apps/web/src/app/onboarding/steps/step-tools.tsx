@@ -79,6 +79,13 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: null,
   },
   {
+    id: "list_directory",
+    name: "Listar directorio",
+    description: "Lista los archivos y carpetas de un directorio (sin confirmación).",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
     id: "write_file",
     name: "Crear archivo",
     description: "Crea un archivo nuevo en el servidor (requiere confirmación).",

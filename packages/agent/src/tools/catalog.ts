@@ -197,6 +197,25 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "list_directory",
+    name: "list_directory",
+    description:
+      "Lists the contents of a directory (files, subdirectories, symlinks) up to a given depth. " +
+      "Use this instead of bash ls/find to explore the workspace structure without requiring confirmation.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative path to the directory to list" },
+        depth: {
+          type: "number",
+          description: "How many levels deep to recurse (1–3, default 1)",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:

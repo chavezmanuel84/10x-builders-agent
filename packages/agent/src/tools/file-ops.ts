@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
+import * as fsSync from "node:fs";
 
 export interface ReadFileResult {
   path: string;
@@ -18,6 +19,21 @@ export interface WriteFileResult {
 export interface EditFileResult {
   path: string;
   replacements_made: 1;
+}
+
+export interface ListDirectoryEntry {
+  name: string;
+  type: "file" | "directory" | "symlink" | "other";
+  /** Relative path from the requested directory root. */
+  relative_path: string;
+}
+
+export interface ListDirectoryResult {
+  path: string;
+  entries: ListDirectoryEntry[];
+  total_entries: number;
+  /** Actual depth scanned (capped at max_depth). */
+  depth: number;
 }
 
 /**
@@ -215,5 +231,84 @@ export async function editFileContents(
   return {
     path: filePath,
     replacements_made: 1,
+  };
+}
+
+const MAX_DEPTH_LIMIT = 3;
+const MAX_ENTRIES = 200;
+
+/**
+ * Lists the contents of a directory up to a given depth (capped at
+ * MAX_DEPTH_LIMIT). Returns a flat array of entries with their relative paths
+ * so the agent can understand workspace structure without using bash.
+ */
+export async function listDirectoryContents(
+  dirPath: string,
+  depth = 1
+): Promise<ListDirectoryResult> {
+  const resolved = nodePath.resolve(dirPath);
+  const effectiveDepth = Math.min(Math.max(depth, 1), MAX_DEPTH_LIMIT);
+
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    stat = await fs.stat(resolved);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(
+        `list_directory: path not found '${dirPath}'. Check the path and try again.`
+      );
+    }
+    if (code === "EACCES" || code === "EPERM") {
+      throw new Error(
+        `list_directory: permission denied accessing '${dirPath}'.`
+      );
+    }
+    throw new Error(`list_directory: could not access '${dirPath}': ${(err as Error).message}`);
+  }
+
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `list_directory: '${dirPath}' is a file, not a directory. Use read_file to read its contents.`
+    );
+  }
+
+  const entries: ListDirectoryEntry[] = [];
+
+  function walk(absDir: string, currentDepth: number): void {
+    if (currentDepth > effectiveDepth || entries.length >= MAX_ENTRIES) return;
+    let names: string[];
+    try {
+      names = fsSync.readdirSync(absDir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (entries.length >= MAX_ENTRIES) break;
+      const absEntry = nodePath.join(absDir, name);
+      const rel = nodePath.relative(resolved, absEntry);
+      let entryType: ListDirectoryEntry["type"] = "other";
+      try {
+        const s = fsSync.lstatSync(absEntry);
+        if (s.isSymbolicLink()) entryType = "symlink";
+        else if (s.isDirectory()) entryType = "directory";
+        else if (s.isFile()) entryType = "file";
+      } catch {
+        entryType = "other";
+      }
+      entries.push({ name, type: entryType, relative_path: rel });
+      if (entryType === "directory" && currentDepth < effectiveDepth) {
+        walk(absEntry, currentDepth + 1);
+      }
+    }
+  }
+
+  walk(resolved, 1);
+
+  return {
+    path: dirPath,
+    entries,
+    total_entries: entries.length,
+    depth: effectiveDepth,
   };
 }

@@ -354,7 +354,18 @@ async function compileAgentGraph(
   function shouldContinue(state: typeof GraphState.State): string {
     const lastMsg = state.messages[state.messages.length - 1];
     if (lastMsg instanceof AIMessage && lastMsg.tool_calls?.length) {
-      const iterations = state.messages.filter(
+      // Count only AIMessages with tool_calls that appear after the last
+      // HumanMessage so the limit applies per agent turn, not per session.
+      // Without this, the global counter hits MAX_TOOL_ITERATIONS across the
+      // entire checkpointed session and permanently blocks all tool use.
+      const lastHumanIdx = [...state.messages]
+        .reverse()
+        .findIndex((m) => m instanceof HumanMessage);
+      const messagesThisTurn =
+        lastHumanIdx >= 0
+          ? state.messages.slice(state.messages.length - lastHumanIdx)
+          : state.messages;
+      const iterations = messagesThisTurn.filter(
         (m) => m instanceof AIMessage && (m as AIMessage).tool_calls?.length
       ).length;
       if (iterations >= MAX_TOOL_ITERATIONS) return "end";
@@ -421,6 +432,23 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const config = { configurable: { thread_id: sessionId } };
   const snapshot = await app.getState(config);
+
+  // Guard: if a HITL interrupt is already pending, do not invoke the graph.
+  // Calling app.invoke with new input on a paused thread replays toolExecutorNode
+  // from the start, creating a duplicate tool_calls row and desynchronising the
+  // auditToolCallId stored in the checkpoint from the one shown in the UI.
+  if (graphStateHasPendingInterrupt(snapshot)) {
+    const hitl = extractHitlFromStateSnapshot(snapshot);
+    const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
+    await addMessage(db, sessionId, "user", message);
+    return {
+      response: pendingConfirmation?.message ?? "",
+      toolCalls: [],
+      pendingConfirmation,
+      error: "pending_hitl",
+    };
+  }
+
   const existing = (snapshot.values?.messages ?? []) as BaseMessage[];
 
   let graphInput: Partial<typeof GraphState.State>;
@@ -567,11 +595,11 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
       auditIdBeforeResume,
       "rejected"
     );
-  } else if (
-    decision.decision === "approve" &&
-    auditIdBeforeResume &&
-    !pendingConfirmation
-  ) {
+  } else if (decision.decision === "approve" && auditIdBeforeResume) {
+    // Always close the approved context row regardless of whether a new interrupt
+    // followed immediately. The next interrupt creates its own agent_messages row;
+    // leaving the previous one open produces orphaned "active" pending_confirmation
+    // rows that accumulate in the DB across chained approvals.
     await closeActiveContextsByToolCallId(
       db,
       sessionId,

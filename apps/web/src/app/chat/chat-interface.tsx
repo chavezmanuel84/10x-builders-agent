@@ -56,7 +56,9 @@ function extractPendingConfirmationFromMessages(
         args: (p.entity as Record<string, unknown>) ?? {},
       };
     }
-    return null;
+    // continue scanning backward — do not exit on the first non-confirmation
+    // assistant message, since a later text response may have been appended
+    // after the confirmation row was written.
   }
   return null;
 }
@@ -235,7 +237,13 @@ export function ChatInterface({
 
       const data = await res.json();
 
-      if (data.pendingConfirmation) {
+      if (data.error === "pending_confirmation_required") {
+        // A HITL approval is already pending; the graph was not re-invoked.
+        // Restore the approval buttons without adding a duplicate assistant message.
+        if (data.pendingConfirmation) {
+          setPendingConfirm(data.pendingConfirmation);
+        }
+      } else if (data.pendingConfirmation) {
         setPendingConfirm(data.pendingConfirmation);
         shouldAutoScrollRef.current = true;
         setMessages((prev) => [

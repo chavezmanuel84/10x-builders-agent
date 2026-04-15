@@ -6,7 +6,7 @@ import type { DbClient } from "@agents/db";
 import type { UserToolSetting, UserIntegration, DeferHitlToolResult } from "@agents/types";
 import { TOOL_CATALOG } from "./catalog";
 import { runBashCommandOnce } from "./bash-exec";
-import { readFileContents, writeFileContents, editFileContents } from "./file-ops";
+import { readFileContents, writeFileContents, editFileContents, listDirectoryContents } from "./file-ops";
 import { createToolCall, updateToolCallStatus } from "@agents/db";
 
 export interface ToolContext {
@@ -724,6 +724,45 @@ export function buildLangChainTools(ctx: ToolContext) {
     );
   }
 
+  if (isToolAvailable("list_directory", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "list_directory", input, false
+          );
+          try {
+            const result = await listDirectoryContents(input.path, input.depth);
+            await updateToolCallStatus(ctx.db, record.id, "executed", { ...result });
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "list_directory",
+          description:
+            "Use this tool to list the contents of a directory — files, subdirectories, and symlinks. " +
+            "Use this instead of bash ls or find to explore the workspace structure; no confirmation needed. " +
+            "Set depth=1 (default) for a flat listing, up to depth=3 for a recursive tree (capped). " +
+            "Do NOT use bash just to list a directory; use list_directory instead.",
+          schema: z.object({
+            path: z.string().describe("Absolute or relative path to the directory to list"),
+            depth: z
+              .number()
+              .min(1)
+              .max(3)
+              .optional()
+              .default(1)
+              .describe("Recursion depth (1–3, default 1)"),
+          }),
+        }
+      )
+    );
+  }
+
   if (isToolAvailable("write_file", ctx)) {
     tools.push(
       tool(
@@ -786,12 +825,16 @@ export function buildLangChainTools(ctx: ToolContext) {
   if (isToolAvailable("bash", ctx)) {
     tools.push(
       tool(
-        async () =>
-          JSON.stringify({
-            control: "hitl_required",
-            message:
-              "This handler does not execute commands. The agent runs bash only after human approval in executeApprovedSideEffect.",
-          }),
+        async () => {
+          // This handler is intentionally unreachable. toolExecutorNode routes all
+          // tools with risk "medium" or "high" (including bash) directly to
+          // runHitlInterruptFlow via toolRequiresConfirmation(), so invoke() is
+          // never called for bash. If this throws, a code path has bypassed that
+          // guard and must be fixed at the call site.
+          throw new Error(
+            "bash handler invoked directly — this is a bug. bash must only execute via executeApprovedSideEffect after HITL approval."
+          );
+        },
         {
           name: "bash",
           description:
