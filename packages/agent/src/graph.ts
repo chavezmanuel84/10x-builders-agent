@@ -35,6 +35,7 @@ import {
   createToolCall,
   updateToolCallStatus,
   closeActiveContextsByToolCallId,
+  getExistingPendingToolCallForSession,
 } from "@agents/db";
 import { getLangGraphCheckpointer } from "./checkpointer";
 import { toolRequiresConfirmation } from "./tools/catalog";
@@ -255,7 +256,11 @@ async function compileAgentGraph(
       const requiresConf = toolRequiresConfirmation(tc.name);
 
       async function runHitlInterruptFlow(summary: string): Promise<void> {
-        const record = await createToolCall(
+        // LangGraph re-runs this node from the beginning on resume, which would call
+        // createToolCall again and produce a duplicate pending_confirmation row. Reuse
+        // the existing pending record for this session+tool if one already exists.
+        const existing = await getExistingPendingToolCallForSession(db, sessionId, tc.name);
+        const record = existing ?? await createToolCall(
           db,
           sessionId,
           tc.name,
