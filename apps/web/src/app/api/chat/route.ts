@@ -8,7 +8,7 @@ import {
   getRecentPendingContexts,
   updateMessageContextStatus,
 } from "@agents/db";
-import { resolvePendingContextReply, runAgent } from "@agents/agent";
+import { buildSystemPrompt, resolvePendingContextReply, runAgent } from "@agents/agent";
 
 export async function POST(request: Request) {
   try {
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
       message: messageForAgent,
       userId: user.id,
       sessionId: session.id,
-      systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
+      systemPrompt: buildSystemPrompt((profile?.agent_system_prompt as string) ?? "Eres un asistente útil."),
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

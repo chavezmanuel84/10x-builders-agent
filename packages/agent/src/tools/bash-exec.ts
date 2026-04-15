@@ -5,6 +5,24 @@ import * as path from "node:path";
 const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_STREAM_BYTES = 1024 * 1024;
 
+// Evaluated once at module load. Falls back to process.cwd() only when
+// AGENT_WORKSPACE_ROOT is not set (local dev without configuration).
+const WORKSPACE_ROOT = process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd();
+
+/**
+ * Validates AGENT_WORKSPACE_ROOT at server startup.
+ * Call this once during application boot so a misconfigured env var fails fast
+ * rather than silently falling back to an unexpected directory at runtime.
+ */
+export async function validateWorkspaceRoot(): Promise<void> {
+  const raw = process.env.AGENT_WORKSPACE_ROOT?.trim();
+  if (!raw) return;
+  const stat = await fs.stat(raw).catch(() => null);
+  if (!stat?.isDirectory()) {
+    throw new Error(`AGENT_WORKSPACE_ROOT is not an accessible directory: ${raw}`);
+  }
+}
+
 export interface RunBashInput {
   prompt: string;
   cwd?: string;
@@ -55,13 +73,19 @@ function collectStream(
 
 async function resolveWorkingDirectory(cwd: string | undefined): Promise<string> {
   if (cwd === undefined || cwd === null || String(cwd).trim() === "") {
-    return process.cwd();
+    return WORKSPACE_ROOT;
   }
-  const resolved = path.resolve(String(cwd).trim());
-  let stat;
-  try {
-    stat = await fs.stat(resolved);
-  } catch {
+  // Resolve relative paths against WORKSPACE_ROOT so "src" becomes
+  // "/workspace/src" rather than an accident of the server's launch directory.
+  const resolved = path.resolve(WORKSPACE_ROOT, String(cwd).trim());
+  // Containment check: reject any path that escapes the workspace root.
+  if (resolved !== WORKSPACE_ROOT && !resolved.startsWith(WORKSPACE_ROOT + path.sep)) {
+    throw new Error(
+      `cwd escapes workspace root — only paths inside '${WORKSPACE_ROOT}' are allowed: ${cwd}`
+    );
+  }
+  const stat = await fs.stat(resolved).catch(() => null);
+  if (!stat) {
     throw new Error(`cwd does not exist or is not accessible: ${cwd}`);
   }
   if (!stat.isDirectory()) {

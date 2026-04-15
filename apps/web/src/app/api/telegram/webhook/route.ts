@@ -9,7 +9,7 @@ import {
   startNewSession,
   updateMessageContextStatus,
 } from "@agents/db";
-import { resolvePendingContextReply, resumeAgent, runAgent } from "@agents/agent";
+import { buildSystemPrompt, resolvePendingContextReply, resumeAgent, runAgent } from "@agents/agent";
 import type { HitlResumeDecision, UserIntegration, UserToolSetting } from "@agents/types";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
@@ -121,7 +121,7 @@ async function resumeHitlForTelegramUser(
   return resumeAgent({
     userId,
     sessionId,
-    systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+    systemPrompt: buildSystemPrompt(profile?.agent_system_prompt ?? "Eres un asistente útil."),
     db,
     enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
       id: t.id as string,
@@ -388,7 +388,7 @@ export async function POST(request: Request) {
       message: messageForAgent,
       userId,
       sessionId: session.id,
-      systemPrompt: profile?.agent_system_prompt ?? "Eres un asistente útil.",
+      systemPrompt: buildSystemPrompt(profile?.agent_system_prompt ?? "Eres un asistente útil."),
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

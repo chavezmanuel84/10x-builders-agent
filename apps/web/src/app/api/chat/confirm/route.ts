@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createServerClient, decrypt } from "@agents/db";
-import { resumeAgent } from "@agents/agent";
+import { buildSystemPrompt, resumeAgent } from "@agents/agent";
 import type {
   HitlResumeDecision,
   UserIntegration,
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
     const result = await resumeAgent({
       userId: user.id,
       sessionId,
-      systemPrompt: (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
+      systemPrompt: buildSystemPrompt((profile?.agent_system_prompt as string) ?? "Eres un asistente útil."),
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,
