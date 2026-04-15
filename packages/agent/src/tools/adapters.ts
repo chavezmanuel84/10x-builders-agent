@@ -843,6 +843,7 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Do NOT use bash tool to read files (use read_file instead of cat/head/tail). " +
             "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
             "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
+            "Do NOT use bash tool to list directories (use list_directory instead of ls/find). " +
             "The execution environment is Linux under WSL2, using bash.",
           schema: z.object({
             prompt: z.string().describe("The bash command to execute"),

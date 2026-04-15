@@ -200,8 +200,10 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     id: "list_directory",
     name: "list_directory",
     description:
-      "Lists the contents of a directory (files, subdirectories, symlinks) up to a given depth. " +
-      "Use this instead of bash ls/find to explore the workspace structure without requiring confirmation.",
+      "Use this tool to list the contents of a directory — files, subdirectories, and symlinks. " +
+      "Use this instead of bash ls or find to explore the workspace structure; no confirmation needed. " +
+      "Set depth=1 (default) for a flat listing, up to depth=3 for a recursive tree (capped). " +
+      "Do NOT use bash just to list a directory; use list_directory instead.",
     risk: "low",
     parameters_schema: {
       type: "object",
@@ -224,6 +226,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       "Do NOT use bash tool to read files (use read_file instead of cat/head/tail). " +
       "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
       "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
+      "Do NOT use bash tool to list directories (use list_directory instead of ls/find). " +
       "The execution environment is Linux under WSL2, using bash.",
     risk: "high",
     parameters_schema: {
