@@ -1,3 +1,5 @@
+import * as nodePath from "node:path";
+import * as nodeFs from "node:fs/promises";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { Octokit } from "@octokit/rest";
@@ -18,6 +20,8 @@ export interface ToolContext {
   githubToken?: string;
   googleCalendarToken?: string;
   userTimezone: string;
+  /** Session-level working directory. Mutated in place by change_directory. */
+  currentDirectory: string;
 }
 
 function todayDateStr(tz: string): string {
@@ -65,6 +69,29 @@ function isToolAvailable(
     if (!hasIntegration) return false;
   }
   return true;
+}
+
+function resolvePathFromCurrentDirectory(pathInput: string, currentDirectory: string): string {
+  const raw = pathInput.trim();
+  if (!raw) return pathInput;
+  if (nodePath.isAbsolute(raw)) return raw;
+  const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd();
+  const currentRelativeToRoot = nodePath.relative(workspaceRoot, currentDirectory);
+  // When the model emits a workspace-root-relative path while we are already
+  // inside that directory (e.g. currentDirectory=/repo/docs and path=docs/x),
+  // resolving against currentDirectory would incorrectly produce /repo/docs/docs/x.
+  // Detect that pattern and resolve from workspace root instead.
+  const currentRelNorm = currentRelativeToRoot.replace(/\\/g, "/");
+  const rawNorm = raw.replace(/\\/g, "/");
+  if (
+    currentRelativeToRoot &&
+    currentRelativeToRoot !== "." &&
+    !currentRelativeToRoot.startsWith("..") &&
+    (rawNorm === currentRelNorm || rawNorm.startsWith(`${currentRelNorm}/`))
+  ) {
+    return nodePath.resolve(workspaceRoot, raw);
+  }
+  return nodePath.resolve(currentDirectory, raw);
 }
 
 function getOctokit(token?: string): Octokit {
@@ -239,7 +266,8 @@ export async function executeApprovedSideEffect(
     if (typeof content !== "string") {
       throw new Error("write_file: content must be a string");
     }
-    const result = await writeFileContents(filePath, content);
+    const effectivePath = resolvePathFromCurrentDirectory(filePath, ctx.currentDirectory);
+    const result = await writeFileContents(effectivePath, content);
     return { ...result } as Record<string, unknown>;
   }
 
@@ -256,7 +284,8 @@ export async function executeApprovedSideEffect(
     if (typeof newString !== "string") {
       throw new Error("edit_file: new_string must be a string");
     }
-    const result = await editFileContents(filePath, oldString, newString);
+    const effectivePath = resolvePathFromCurrentDirectory(filePath, ctx.currentDirectory);
+    const result = await editFileContents(effectivePath, oldString, newString);
     return { ...result } as Record<string, unknown>;
   }
 
@@ -282,7 +311,11 @@ export async function executeApprovedSideEffect(
     if (typeof prompt !== "string") {
       throw new Error("bash tool: prompt must be a string");
     }
-    const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
+    // Use the session-level currentDirectory as the default cwd so the agent
+    // always runs bash from the directory it last navigated to, rather than
+    // whatever the LLM happens to put in the cwd argument.
+    const explicitCwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : undefined;
+    const cwd = explicitCwd ?? ctx.currentDirectory;
     const terminal = typeof args.terminal === "string" ? args.terminal : undefined;
     const result = await runBashCommandOnce({ prompt, cwd, terminal });
     return { ...result } as Record<string, unknown>;
@@ -444,7 +477,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd();
             const result = {
               workspace_root: workspaceRoot,
-              current_directory: workspaceRoot,
+              // current_directory reflects any change_directory calls made this session.
+              current_directory: ctx.currentDirectory,
             };
             await updateToolCallStatus(ctx.db, record.id, "executed", result);
             return JSON.stringify(result);
@@ -729,7 +763,8 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.db, ctx.sessionId, "read_file", input, false
           );
           try {
-            const result = await readFileContents(input.path, input.offset, input.limit);
+            const effectivePath = resolvePathFromCurrentDirectory(input.path, ctx.currentDirectory);
+            const result = await readFileContents(effectivePath, input.offset, input.limit);
             await updateToolCallStatus(ctx.db, record.id, "executed", { ...result });
             return JSON.stringify(result);
           } catch (err) {
@@ -764,7 +799,9 @@ export function buildLangChainTools(ctx: ToolContext) {
             ctx.db, ctx.sessionId, "list_directory", input, false
           );
           try {
-            const result = await listDirectoryContents(input.path, input.depth);
+            const rawPath = typeof input.path === "string" ? input.path : "";
+            const effectivePath = resolvePathFromCurrentDirectory(rawPath, ctx.currentDirectory);
+            const result = await listDirectoryContents(effectivePath, input.depth);
             await updateToolCallStatus(ctx.db, record.id, "executed", { ...result });
             return JSON.stringify(result);
           } catch (err) {
@@ -848,6 +885,54 @@ export function buildLangChainTools(ctx: ToolContext) {
             path: z.string().describe("Absolute or relative path to the file to edit"),
             old_string: z.string().describe("The exact substring to find (must match exactly once, case-sensitive)"),
             new_string: z.string().describe("The string to replace old_string with"),
+          }),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("change_directory", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "change_directory", input as Record<string, unknown>, false
+          );
+          try {
+            const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd();
+            const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+            if (!rawPath) throw new Error("change_directory: path is required");
+
+            const resolved = resolvePathFromCurrentDirectory(rawPath, ctx.currentDirectory);
+            if (resolved !== workspaceRoot && !resolved.startsWith(workspaceRoot + nodePath.sep)) {
+              throw new Error(
+                `change_directory: path escapes workspace root — only paths inside '${workspaceRoot}' are allowed: ${input.path}`
+              );
+            }
+            const stat = await nodeFs.stat(resolved).catch(() => null);
+            if (!stat) throw new Error(`change_directory: path does not exist: ${input.path}`);
+            if (!stat.isDirectory()) throw new Error(`change_directory: path is not a directory: ${input.path}`);
+
+            // Mutate toolCtx in place — toolExecutorNode will emit this value
+            // to the graph state so it persists across turns.
+            ctx.currentDirectory = resolved;
+
+            const result = { current_directory: resolved, workspace_root: workspaceRoot };
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "change_directory",
+          description:
+            "Changes the agent's current working directory for this session. " +
+            "The path must exist inside the workspace root.",
+          schema: z.object({
+            path: z.string().describe("Absolute or relative path to the directory to navigate to"),
           }),
         }
       )

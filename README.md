@@ -8,15 +8,16 @@ Desde la raíz del repositorio:
 
 ```bash
 npm install
-cp .env.example apps/web/.env.local
+test -f .env.example && cp .env.example apps/web/.env.local || true
 npm run dev
 ```
 
-Luego completa en `apps/web/.env.local` las variables mínimas (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENROUTER_API_KEY`) y abre `http://localhost:3000/signup` o `http://localhost:3000/login`.
+Crea o edita `apps/web/.env.local` con las variables mínimas (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENROUTER_API_KEY`). Opcional pero recomendable en despliegues: `AGENT_WORKSPACE_ROOT` apuntando al directorio de trabajo del agente. Luego abre `http://localhost:3000/signup` o `http://localhost:3000/login`.
 
 ## Capacidades principales
 - Agente conversacional multicanal (web + Telegram)
 - Integración con herramientas externas mediante OAuth
+- Ejecución de comandos y rutas de archivo acotadas al *workspace* del agente (`AGENT_WORKSPACE_ROOT` o, si no se define, el directorio desde el que arranca el servidor)
 - Ejecución de acciones desde lenguaje natural
 - Confirmación de acciones sensibles (UI + Telegram)
 - Soporte para fechas naturales ("hoy", "mañana", "próximo lunes")
@@ -62,17 +63,17 @@ npm install
 
 ---
 
-## Paso 3 — Aplicar el esquema SQL (tablas + RLS)
+## Paso 3 — Aplicar el esquema SQL (tablas + RLS + semillas)
 
-1. En Supabase, abre **SQL Editor**.
-2. Abre el archivo del repo:
+En Supabase, abre **SQL Editor** y ejecuta **en orden** (cada archivo, completo, con **Run**):
 
-   `packages/db/supabase/migrations/00001_initial_schema.sql`
+| Orden | Archivo | Qué hace |
+|-------|---------|----------|
+| 1 | `packages/db/supabase/migrations/00001_initial_schema.sql` | Tablas, RLS, trigger `handle_new_user` (perfil al registrarse) |
+| 2 | `packages/db/supabase/migrations/00002_seed_get_current_path_tool.sql` | Rellena `user_tool_settings` con `get_current_path` para usuarios ya existentes |
+| 3 | `packages/db/supabase/migrations/00003_seed_default_tools_on_signup.sql` | Sustituye `handle_new_user` para que cada **nuevo** usuario tenga `get_current_path` y `change_directory` activados; además hace *backfill* idempotente |
 
-3. Copia **todo** el contenido y pégalo en el editor.
-4. Ejecuta el script (**Run**).
-
-Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya modificado), revisa el mensaje de error; en la mayoría de proyectos nuevos el script aplica de una vez.
+Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya modificado), revisa el mensaje de error; en la mayoría de proyectos nuevos los tres scripts aplican sin conflictos.
 
 ---
 
@@ -93,10 +94,10 @@ Así el flujo de login/signup y el intercambio de código en `/auth/callback` fu
 
 Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la raíz del monorepo.
 
-1. Copia el ejemplo:
+1. Crea `apps/web/.env.local`. Si existe `.env.example` en la raíz del monorepo:
 
    ```bash
-   cp .env.example apps/web/.env.local
+   test -f .env.example && cp .env.example apps/web/.env.local || true
    ```
 
    *(Si ya tienes `.env.local` en la raíz, mueve o copia ese archivo a `apps/web/.env.local`.)*
@@ -112,9 +113,9 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
    | `OAUTH_ENCRYPTION_KEY` | Clave usada para cifrar/desencriptar tokens OAuth en servidor (requerida para integraciones como GitHub/Google Calendar) |
+   | `AGENT_WORKSPACE_ROOT` | *(Recomendado en servidor)* Ruta absoluta del directorio donde el agente puede ejecutar bash y operar con archivos. Si no está definida, se usa `process.cwd()` (útil en local si arrancas `npm run dev` desde la raíz del repo). Los `cwd` relativos y las rutas de herramientas se resuelven y contienen respecto a este directorio. |
    | `GOOGLE_CLIENT_ID`              | OAuth Client ID de Google      |
    | `GOOGLE_CLIENT_SECRET`          | OAuth Client Secret de Google  |
-Referencia de nombres: [.env.example](.env.example).
 
 ---
 
@@ -139,7 +140,7 @@ Flujo esperado:
 ## Paso 7 — Probar el chat con el modelo
 
 1. Confirma que `OPENROUTER_API_KEY` está en `apps/web/.env.local`.
-2. En el onboarding, activa al menos las herramientas básicas (`get_user_preferences`, `list_enabled_tools`) si quieres probar *tool calling*.
+2. Tras aplicar las migraciones SQL, los usuarios nuevos tienen ya activadas por defecto `get_current_path` y `change_directory` (navegación segura dentro del *workspace*). Para más *tool calling*, activa en onboarding otras herramientas (p. ej. `get_user_preferences`, `list_enabled_tools`).
 3. Escribe un mensaje en `/chat`. Si la clave o el modelo fallan, revisa la consola del servidor (terminal donde corre `npm run dev`).
 
 El modelo por defecto está definido en `packages/agent/src/model.ts` (OpenRouter, `openai/gpt-4o-mini`). Puedes cambiarlo ahí si lo necesitas.
@@ -216,6 +217,7 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
 - **Redirecciones infinitas o “no auth”**: revisa `Site URL` y `Redirect URLs` en Supabase y que `.env.local` esté en **`apps/web`**.
 - **Errores al guardar perfil o mensajes**: confirma que ejecutaste la migración SQL y que RLS no bloquea por falta de sesión (debes estar logueado con el mismo usuario).
 - **Chat sin respuesta / 500 en `/api/chat`**: `OPENROUTER_API_KEY`, cuota en OpenRouter o modelo en `model.ts`.
+- **Error de arranque por `AGENT_WORKSPACE_ROOT`**: la variable debe apuntar a un directorio que exista y sea legible; si la defines en producción, usa la ruta absoluta del *checkout* o del volumen aislado del agente.
 - **Telegram no responde**: webhook debe ser HTTPS; token y secreto correctos; visita de nuevo `/api/telegram/setup` si cambias la URL pública.
 
 ---

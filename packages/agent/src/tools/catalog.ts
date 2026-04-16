@@ -228,6 +228,26 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     },
   },
   {
+    id: "change_directory",
+    name: "change_directory",
+    description:
+      "Changes the agent's current working directory for this session. " +
+      "Use this to navigate to a subdirectory before running related bash commands or file operations. " +
+      "The path must exist inside the workspace root. " +
+      "Does not require confirmation.",
+    risk: "low",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute or relative path to the directory to navigate to",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
     id: "bash",
     name: "bash",
     description:

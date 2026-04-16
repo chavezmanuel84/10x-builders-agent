@@ -45,6 +45,16 @@ const GraphState = Annotation.Root({
     reducer: (prev, next) => [...prev, ...next],
     default: () => [],
   }),
+  // Tracks the agent's working directory for the duration of the session.
+  // The default is AGENT_WORKSPACE_ROOT (or process.cwd() if unset).
+  // Updated by change_directory tool calls; persisted across turns via checkpoint.
+  currentDirectory: Annotation<string>({
+    default: () => process.env.AGENT_WORKSPACE_ROOT?.trim() || process.cwd(),
+    // Safe reducer: only overwrite when a non-empty value is emitted.
+    // Old checkpoints without this field produce undefined → keep prev.
+    reducer: (prev, next) =>
+      next !== undefined && next !== null && next !== "" ? next : prev,
+  }),
   sessionId: Annotation<string>(),
   userId: Annotation<string>(),
   systemPrompt: Annotation<string>(),
@@ -206,7 +216,10 @@ function hitlToPendingConfirmation(v: HitlInterruptValue): PendingConfirmation {
   };
 }
 
-function buildToolContext(input: Omit<AgentInput, "message" | "contextInstruction">): ToolContext {
+function buildToolContext(
+  input: Omit<AgentInput, "message" | "contextInstruction">,
+  currentDirectory?: string
+): ToolContext {
   return {
     db: input.db,
     userId: input.userId,
@@ -216,6 +229,8 @@ function buildToolContext(input: Omit<AgentInput, "message" | "contextInstructio
     githubToken: input.githubToken,
     googleCalendarToken: input.googleCalendarToken,
     userTimezone: input.userTimezone,
+    currentDirectory:
+      currentDirectory ?? process.env.AGENT_WORKSPACE_ROOT?.trim() ?? process.cwd(),
   };
 }
 
@@ -353,7 +368,9 @@ async function compileAgentGraph(
       }
     }
 
-    return { messages: results };
+    // Always emit currentDirectory so the checkpoint stays in sync with any
+    // mutation that change_directory made to toolCtx.currentDirectory.
+    return { messages: results, currentDirectory: toolCtx.currentDirectory };
   }
 
   function shouldContinue(state: typeof GraphState.State): string {
@@ -417,6 +434,10 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   } = input;
 
   const checkpointer = await getLangGraphCheckpointer();
+  // Build toolCtx with the default currentDirectory first — compileAgentGraph
+  // needs it before the snapshot is available. The snapshot is read next and
+  // the persisted currentDirectory is applied via mutation so all closed-over
+  // tool implementations see the correct session value before invoke.
   const toolCtx = buildToolContext({
     db,
     userId,
@@ -437,6 +458,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
 
   const config = { configurable: { thread_id: sessionId } };
   const snapshot = await app.getState(config);
+
+  // Restore session-level currentDirectory from the checkpoint so the agent
+  // continues from where it last was (e.g. after a change_directory call).
+  const savedDirectory = (snapshot.values as Partial<typeof GraphState.State>)?.currentDirectory;
+  if (savedDirectory) toolCtx.currentDirectory = savedDirectory;
 
   // Guard: if a HITL interrupt is already pending, do not invoke the graph.
   // Calling app.invoke with new input on a paused thread replays toolExecutorNode
@@ -565,6 +591,11 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
 
   const config = { configurable: { thread_id: sessionId } };
   const snapshot = await app.getState(config);
+
+  // Restore session-level currentDirectory from the checkpoint so resumed
+  // executions continue from the directory set before the HITL pause.
+  const savedDirectory = (snapshot.values as Partial<typeof GraphState.State>)?.currentDirectory;
+  if (savedDirectory) toolCtx.currentDirectory = savedDirectory;
 
   if (!graphStateHasPendingInterrupt(snapshot)) {
     return {
