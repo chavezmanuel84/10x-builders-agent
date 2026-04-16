@@ -11,6 +11,7 @@ import {
 } from "@agents/db";
 import { buildSystemPrompt, resolvePendingContextReply, resumeAgent, runAgent } from "@agents/agent";
 import type { HitlResumeDecision, UserIntegration, UserToolSetting } from "@agents/types";
+import { sendTelegramMessage as sendTelegramMessageRaw } from "@/lib/telegram";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
@@ -36,18 +37,10 @@ async function sendTelegramMessage(
   text: string,
   replyMarkup?: Record<string, unknown>
 ) {
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    console.error("Telegram sendMessage failed:", res.status, body);
+  try {
+    await sendTelegramMessageRaw(chatId, text, replyMarkup);
+  } catch (error) {
+    console.error("Telegram sendMessage failed:", error);
   }
 }
 
@@ -121,7 +114,10 @@ async function resumeHitlForTelegramUser(
   return resumeAgent({
     userId,
     sessionId,
-    systemPrompt: buildSystemPrompt(profile?.agent_system_prompt ?? "Eres un asistente útil."),
+    systemPrompt: buildSystemPrompt(
+      profile?.agent_system_prompt ?? "Eres un asistente útil.",
+      (profile?.timezone as string) ?? "America/Bogota"
+    ),
     db,
     enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
       id: t.id as string,
@@ -388,7 +384,10 @@ export async function POST(request: Request) {
       message: messageForAgent,
       userId,
       sessionId: session.id,
-      systemPrompt: buildSystemPrompt(profile?.agent_system_prompt ?? "Eres un asistente útil."),
+      systemPrompt: buildSystemPrompt(
+        profile?.agent_system_prompt ?? "Eres un asistente útil.",
+        (profile?.timezone as string) ?? "America/Bogota"
+      ),
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

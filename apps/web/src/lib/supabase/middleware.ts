@@ -35,6 +35,7 @@ export async function updateSession(request: NextRequest) {
   const isPublic = publicPaths.some((p) => pathname.startsWith(p));
   const isPublicApi =
     pathname.startsWith("/api/telegram/webhook") ||
+    pathname.startsWith("/api/internal/cronjobs/tick") ||
     pathname.startsWith("/api/integrations/github/callback") ||
     pathname.startsWith("/api/integrations/google-calendar/callback");
 

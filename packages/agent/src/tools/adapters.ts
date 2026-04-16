@@ -9,7 +9,8 @@ import type { UserToolSetting, UserIntegration, DeferHitlToolResult } from "@age
 import { TOOL_CATALOG } from "./catalog";
 import { runBashCommandOnce } from "./bash-exec";
 import { readFileContents, writeFileContents, editFileContents, listDirectoryContents } from "./file-ops";
-import { createToolCall, updateToolCallStatus } from "@agents/db";
+import { createCronJob, createToolCall, updateToolCallStatus } from "@agents/db";
+import { getNextCronRunAt } from "../scheduling";
 
 export interface ToolContext {
   db: DbClient;
@@ -35,6 +36,46 @@ function todayDateStr(tz: string): string {
   } catch {
     return new Date().toISOString().split("T")[0];
   }
+}
+
+function currentDateTimePayload(tz: string): Record<string, unknown> {
+  const now = new Date();
+  const fallbackIso = now.toISOString();
+  let isoDate = fallbackIso.slice(0, 10);
+  let localTime = fallbackIso.slice(11, 19);
+  try {
+    const dateParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(now);
+    const y = dateParts.find((p) => p.type === "year")?.value ?? "";
+    const m = dateParts.find((p) => p.type === "month")?.value ?? "";
+    const d = dateParts.find((p) => p.type === "day")?.value ?? "";
+    if (y && m && d) isoDate = `${y}-${m}-${d}`;
+
+    const timeParts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(now);
+    const hh = timeParts.find((p) => p.type === "hour")?.value ?? "";
+    const mm = timeParts.find((p) => p.type === "minute")?.value ?? "";
+    const ss = timeParts.find((p) => p.type === "second")?.value ?? "";
+    if (hh && mm && ss) localTime = `${hh}:${mm}:${ss}`;
+  } catch {
+    // Keep fallback ISO-derived values.
+  }
+
+  return {
+    timezone: tz,
+    date: isoDate,
+    time: localTime,
+    iso_utc: fallbackIso,
+  };
 }
 
 /** Returns the UTC offset string (e.g. "-05:00", "+05:30") for a given IANA timezone. */
@@ -194,6 +235,14 @@ export function buildHitlInterruptSummary(
         : "";
       return `Crear evento "${args.title}" (${args.start} → ${args.end})${attendees}`;
     }
+    case "create_cronjob": {
+      const scheduleType =
+        typeof args.schedule_type === "string" ? args.schedule_type : "recurring";
+      if (scheduleType === "one_time") {
+        return `Crear tarea one-time "${args.job_name}" para ${args.run_at}`;
+      }
+      return `Crear tarea recurrente "${args.job_name}" con expresión ${args.expression}`;
+    }
     case "write_file": {
       const bytesEstimate = Buffer.byteLength(
         typeof args.content === "string" ? args.content : "",
@@ -255,6 +304,84 @@ export async function executeApprovedSideEffect(
   if (toolName === "list_enabled_tools") {
     const enabled = ctx.enabledTools.filter((t) => t.enabled).map((t) => t.tool_id);
     return { tool_ids: enabled };
+  }
+  if (toolName === "get_current_datetime") {
+    return currentDateTimePayload(ctx.userTimezone || "America/Bogota");
+  }
+
+  if (toolName === "create_cronjob") {
+    const jobName = args.job_name;
+    const description = args.description;
+    const scheduleTypeRaw = args.schedule_type;
+    const expression = args.expression;
+    const runAt = args.run_at;
+    const prompt = args.prompt;
+    const timezone = args.timezone;
+
+    if (typeof jobName !== "string" || !jobName.trim()) {
+      throw new Error("create_cronjob: job_name must be a non-empty string");
+    }
+    if (typeof expression !== "string" || !expression.trim()) {
+      throw new Error("create_cronjob: expression must be a non-empty string");
+    }
+    if (typeof prompt !== "string" || !prompt.trim()) {
+      throw new Error("create_cronjob: prompt must be a non-empty string");
+    }
+
+    const scheduleType =
+      scheduleTypeRaw === "one_time" ? "one_time" : "recurring";
+    const tz = typeof timezone === "string" && timezone.trim()
+      ? timezone.trim()
+      : ctx.userTimezone;
+    let nextRunAt: string;
+    let normalizedExpression: string | undefined;
+    let normalizedRunAt: string | undefined;
+
+    if (scheduleType === "one_time") {
+      if (typeof runAt !== "string" || !runAt.trim()) {
+        throw new Error("create_cronjob: run_at is required for one_time schedule");
+      }
+      const parsed = new Date(runAt);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new Error(
+          "create_cronjob: run_at must be a valid ISO datetime with timezone"
+        );
+      }
+      if (parsed.getTime() <= Date.now()) {
+        throw new Error("create_cronjob: run_at must be in the future");
+      }
+      nextRunAt = parsed.toISOString();
+      normalizedRunAt = nextRunAt;
+    } else {
+      if (typeof expression !== "string" || !expression.trim()) {
+        throw new Error("create_cronjob: expression is required for recurring schedule");
+      }
+      normalizedExpression = expression.trim();
+      nextRunAt = getNextCronRunAt(normalizedExpression, tz).toISOString();
+    }
+
+    const created = await createCronJob(ctx.db, ctx.userId, {
+      job_name: jobName.trim(),
+      description: typeof description === "string" ? description.trim() : "",
+      schedule_type: scheduleType,
+      cron_expression: normalizedExpression,
+      one_time_run_at: normalizedRunAt,
+      task_prompt: prompt.trim(),
+      timezone: tz,
+      next_run_at: nextRunAt,
+      status: "active",
+    });
+
+    return {
+      id: created.id,
+      job_name: created.job_name,
+      schedule_type: created.schedule_type,
+      cron_expression: created.cron_expression,
+      one_time_run_at: created.one_time_run_at,
+      timezone: created.timezone,
+      next_run_at: created.next_run_at,
+      status: created.status,
+    };
   }
 
   if (toolName === "write_file") {
@@ -499,6 +626,34 @@ export function buildLangChainTools(ctx: ToolContext) {
     );
   }
 
+  if (isToolAvailable("get_current_datetime", ctx)) {
+    tools.push(
+      tool(
+        async () => {
+          const record = await createToolCall(
+            ctx.db, ctx.sessionId, "get_current_datetime", {}, false
+          );
+          try {
+            const result = currentDateTimePayload(ctx.userTimezone || "America/Bogota");
+            await updateToolCallStatus(ctx.db, record.id, "executed", result);
+            return JSON.stringify(result);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown error";
+            await updateToolCallStatus(ctx.db, record.id, "failed", { error: message });
+            return JSON.stringify({ error: message });
+          }
+        },
+        {
+          name: "get_current_datetime",
+          description:
+            "Returns current date/time in the user's timezone. " +
+            "Use this instead of running bash date/time commands.",
+          schema: z.object({}),
+        }
+      )
+    );
+  }
+
   if (isToolAvailable("list_enabled_tools", ctx)) {
     tools.push(
       tool(
@@ -524,6 +679,38 @@ export function buildLangChainTools(ctx: ToolContext) {
           name: "list_enabled_tools",
           description: "Lists all tools the user has currently enabled.",
           schema: z.object({}),
+        }
+      )
+    );
+  }
+
+  if (isToolAvailable("create_cronjob", ctx)) {
+    tools.push(
+      tool(
+        async (input) => {
+          const payload: DeferHitlToolResult = {
+            defer_hitl: true,
+            summary: buildHitlInterruptSummary("create_cronjob", input as Record<string, unknown>),
+            args: input as Record<string, unknown>,
+          };
+          return JSON.stringify(payload);
+        },
+        {
+          name: "create_cronjob",
+          description:
+            "Creates a scheduled task. Supports recurring cron and one-time execution. Requires confirmation.",
+          schema: z.object({
+            job_name: z.string().min(1).max(120),
+            description: z.string().max(500).optional().default(""),
+            schedule_type: z.enum(["recurring", "one_time"]).optional().default("recurring"),
+            expression: z.string().min(1).max(120).optional(),
+            run_at: z
+              .string()
+              .optional()
+              .describe("One-time ISO datetime with timezone, required for one_time"),
+            prompt: z.string().min(1).max(2000),
+            timezone: z.string().optional().describe("IANA timezone (defaults to user timezone)"),
+          }),
         }
       )
     );
@@ -961,6 +1148,7 @@ export function buildLangChainTools(ctx: ToolContext) {
             "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
             "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
             "Do NOT use bash tool to list directories (use list_directory instead of ls/find). " +
+            "Do NOT use bash tool for date/time questions (use get_current_datetime instead of date). " +
             "The execution environment is Linux under WSL2, using bash.",
           schema: z.object({
             prompt: z.string().describe("The bash command to execute"),

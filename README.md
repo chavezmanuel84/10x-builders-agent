@@ -72,6 +72,9 @@ En Supabase, abre **SQL Editor** y ejecuta **en orden** (cada archivo, completo,
 | 1 | `packages/db/supabase/migrations/00001_initial_schema.sql` | Tablas, RLS, trigger `handle_new_user` (perfil al registrarse) |
 | 2 | `packages/db/supabase/migrations/00002_seed_get_current_path_tool.sql` | Rellena `user_tool_settings` con `get_current_path` para usuarios ya existentes |
 | 3 | `packages/db/supabase/migrations/00003_seed_default_tools_on_signup.sql` | Sustituye `handle_new_user` para que cada **nuevo** usuario tenga `get_current_path` y `change_directory` activados; además hace *backfill* idempotente |
+| 4 | `packages/db/supabase/migrations/00004_cronjobs.sql` | Crea `cronjobs` y `cronjobs_runs` para tareas programadas, auditoría de ejecuciones e infraestructura de claim segura |
+| 5 | `packages/db/supabase/migrations/00005_seed_get_current_datetime_tool.sql` | Activa por defecto `get_current_datetime` para cuentas nuevas y existentes |
+| 6 | `packages/db/supabase/migrations/00006_cronjobs_one_time_support.sql` | Añade soporte `one_time` vs `recurring` en cronjobs |
 
 Si algo falla (por ejemplo, el trigger `on_auth_user_created` en un proyecto ya modificado), revisa el mensaje de error; en la mayoría de proyectos nuevos los tres scripts aplican sin conflictos.
 
@@ -113,6 +116,8 @@ Next.js carga `.env*` desde el directorio de la app **`apps/web`**, no desde la 
    | `TELEGRAM_BOT_TOKEN` | *(Opcional)* Token del bot |
    | `TELEGRAM_WEBHOOK_SECRET` | *(Opcional)* Secreto que Telegram enviará en cabecera; debe coincidir con el configurado al registrar el webhook |
    | `OAUTH_ENCRYPTION_KEY` | Clave usada para cifrar/desencriptar tokens OAuth en servidor (requerida para integraciones como GitHub/Google Calendar) |
+   | `CRON_TICK_SECRET` | Secreto compartido para proteger `/api/internal/cronjobs/tick` |
+   | `CRON_TICK_MAX_JOBS` | Máximo de tareas procesadas por tick (opcional, default `10`) |
    | `AGENT_WORKSPACE_ROOT` | *(Recomendado en servidor)* Ruta absoluta del directorio donde el agente puede ejecutar bash y operar con archivos. Si no está definida, se usa `process.cwd()` (útil en local si arrancas `npm run dev` desde la raíz del repo). Los `cwd` relativos y las rutas de herramientas se resuelven y contienen respecto a este directorio. |
    | `GOOGLE_CLIENT_ID`              | OAuth Client ID de Google      |
    | `GOOGLE_CLIENT_SECRET`          | OAuth Client Secret de Google  |
@@ -190,6 +195,39 @@ Después de vincular, los mensajes al bot usan el mismo pipeline que el chat web
    - `GOOGLE_CLIENT_SECRET`
    - `OAUTH_ENCRYPTION_KEY`
 4. Inicia sesión en la app y conecta Google Calendar desde **Settings**.
+
+---
+
+## Paso 10 — Cron de tareas programadas (opcional)
+
+1. Define en `apps/web/.env.local`:
+   - `CRON_TICK_SECRET` (valor largo y aleatorio)
+   - `CRON_TICK_MAX_JOBS` (opcional, por ejemplo `10`)
+2. Verifica manualmente el endpoint interno:
+   - `POST /api/internal/cronjobs/tick`
+   - Header requerido: `x-cron-secret: <CRON_TICK_SECRET>`
+3. Programa Supabase Cron para llamar el endpoint cada minuto (requiere `pg_cron` y `pg_net`):
+
+   ```sql
+   select cron.schedule(
+     'agent-cronjobs-tick-every-minute',
+     '* * * * *',
+     $$
+     select net.http_post(
+       url := 'https://TU_DOMINIO/api/internal/cronjobs/tick',
+       headers := jsonb_build_object(
+         'Content-Type', 'application/json',
+         'x-cron-secret', 'TU_CRON_TICK_SECRET'
+       ),
+       body := '{}'::jsonb
+     );
+     $$
+   );
+   ```
+
+4. Flujo esperado de notificaciones:
+   - Si el usuario tiene Telegram vinculado, se envía mensaje por bot.
+   - Si no lo tiene, la ejecución no se bloquea y queda auditada con fallback a `log`.
 
 ---
 

@@ -93,6 +93,53 @@ export interface TelegramAccount {
   linked_at: string;
 }
 
+export type CronJobStatus = "active" | "paused" | "failed" | "completed";
+export type CronJobScheduleType = "recurring" | "one_time";
+
+export interface CronJob {
+  id: string;
+  user_id: string;
+  job_name: string;
+  description: string;
+  schedule_type: CronJobScheduleType;
+  cron_expression?: string;
+  one_time_run_at?: string;
+  task_prompt: string;
+  timezone: string;
+  status: CronJobStatus;
+  last_executed_at?: string;
+  next_run_at: string;
+  last_error?: string;
+  locked_at?: string;
+  locked_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CronJobRunStatus = "running" | "success" | "failed";
+export type CronJobNotificationChannel = "telegram" | "log";
+export type CronJobNotificationStatus =
+  | "pending"
+  | "sent"
+  | "fallback_log"
+  | "failed";
+
+export interface CronJobRun {
+  id: string;
+  cronjob_id: string;
+  user_id: string;
+  scheduled_for: string;
+  started_at: string;
+  finished_at?: string;
+  status: CronJobRunStatus;
+  agent_session_id?: string;
+  notification_channel: CronJobNotificationChannel;
+  notification_status: CronJobNotificationStatus;
+  error_message?: string;
+  result_json: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface ToolDefinition {
   id: string;
   name: string;

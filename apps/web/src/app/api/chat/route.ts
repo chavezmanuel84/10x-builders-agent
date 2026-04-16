@@ -105,7 +105,10 @@ export async function POST(request: Request) {
       message: messageForAgent,
       userId: user.id,
       sessionId: session.id,
-      systemPrompt: buildSystemPrompt((profile?.agent_system_prompt as string) ?? "Eres un asistente útil."),
+      systemPrompt: buildSystemPrompt(
+        (profile?.agent_system_prompt as string) ?? "Eres un asistente útil.",
+        (profile?.timezone as string) ?? "America/Bogota"
+      ),
       db,
       enabledTools: (toolSettings ?? []).map((t: Record<string, unknown>) => ({
         id: t.id as string,

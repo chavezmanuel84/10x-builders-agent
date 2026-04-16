@@ -19,11 +19,63 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     parameters_schema: { type: "object", properties: {}, required: [] },
   },
   {
+    id: "get_current_datetime",
+    name: "get_current_datetime",
+    description:
+      "Returns the current date and time in the user's timezone. " +
+      "Use this instead of running bash date/time commands for questions like 'what time is it?' or 'what date is today?'. " +
+      "Does not require confirmation and does not execute any shell command.",
+    risk: "low",
+    parameters_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
     id: "list_enabled_tools",
     name: "list_enabled_tools",
     description: "Lists all tools the user has currently enabled.",
     risk: "low",
     parameters_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    id: "create_cronjob",
+    name: "create_cronjob",
+    description:
+      "Creates a scheduled task. Supports recurring cron or one-time execution. Requires confirmation.",
+    risk: "medium",
+    parameters_schema: {
+      type: "object",
+      properties: {
+        job_name: { type: "string", description: "Short name for the scheduled job" },
+        description: {
+          type: "string",
+          description: "Optional description of what the job does",
+        },
+        schedule_type: {
+          type: "string",
+          enum: ["recurring", "one_time"],
+          description: "Schedule mode. Defaults to recurring.",
+        },
+        expression: {
+          type: "string",
+          description:
+            "Cron expression (five fields, e.g. '*/15 * * * *'). Required for recurring.",
+        },
+        run_at: {
+          type: "string",
+          description:
+            "One-time datetime in ISO 8601 with timezone (e.g. '2026-04-20T15:30:00-05:00'). Required for one_time.",
+        },
+        prompt: {
+          type: "string",
+          description: "Instruction sent to the agent on each scheduled run",
+        },
+        timezone: {
+          type: "string",
+          description:
+            "IANA timezone for the schedule. Defaults to the user timezone.",
+        },
+      },
+      required: ["job_name", "prompt"],
+    },
   },
   {
     id: "github_list_repos",
@@ -257,6 +309,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
       "Do NOT use bash tool to edit files (use edit_file instead of sed/awk). " +
       "Do NOT use bash tool to create new files with content (use write_file instead of echo/tee redirection). " +
       "Do NOT use bash tool to list directories (use list_directory instead of ls/find). " +
+      "Do NOT use bash tool for date/time questions (use get_current_datetime instead of date). " +
       "The execution environment is Linux under WSL2, using bash.",
     risk: "high",
     parameters_schema: {

@@ -23,6 +23,20 @@ const AVAILABLE_TOOLS = [
     requiresIntegration: null,
   },
   {
+    id: "get_current_datetime",
+    name: "Fecha y hora actual",
+    description: "Devuelve fecha y hora actual sin ejecutar bash.",
+    risk: "low" as const,
+    requiresIntegration: null,
+  },
+  {
+    id: "create_cronjob",
+    name: "Programar tarea",
+    description: "Crea una tarea programada con expresión cron (requiere confirmación).",
+    risk: "medium" as const,
+    requiresIntegration: null,
+  },
+  {
     id: "github_list_repos",
     name: "GitHub: listar repos",
     description: "Lista tus repositorios de GitHub.",
