@@ -9,13 +9,13 @@ describe("runBashCommandOnce", () => {
     await expect(runBashCommandOnce({ prompt: "   " })).rejects.toThrow(/empty command/i);
   });
 
-  it("throws on invalid cwd", async () => {
+  it("throws on cwd outside workspace root", async () => {
     await expect(
       runBashCommandOnce({
         prompt: "echo hi",
         cwd: "/nonexistent-path-xyz-12345",
       })
-    ).rejects.toThrow(/cwd does not exist/i);
+    ).rejects.toThrow(/escapes workspace root/i);
   });
 
   it("throws when cwd is not a directory", async () => {

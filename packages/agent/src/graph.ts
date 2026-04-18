@@ -39,6 +39,7 @@ import {
 } from "@agents/db";
 import { getLangGraphCheckpointer } from "./checkpointer";
 import { toolRequiresConfirmation } from "./tools/catalog";
+import { createCompactionNode } from "./nodes/compaction_node";
 
 const GraphState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -58,6 +59,11 @@ const GraphState = Annotation.Root({
   sessionId: Annotation<string>(),
   userId: Annotation<string>(),
   systemPrompt: Annotation<string>(),
+  compactionCount: Annotation<number>({
+    default: () => 0,
+    // Old checkpoints won't have this field; keep previous value when absent.
+    reducer: (prev, next) => (next !== undefined && next !== null ? next : prev),
+  }),
 });
 
 export interface AgentInput {
@@ -242,6 +248,7 @@ async function compileAgentGraph(
   const model = createChatModel();
   const lcTools = buildLangChainTools(toolCtx);
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
+  const compactionNode = createCompactionNode();
   const toolCallNamesRef = { names: [] as string[] };
 
   async function agentNode(
@@ -397,14 +404,16 @@ async function compileAgentGraph(
   }
 
   const graph = new StateGraph(GraphState)
+    .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "agent")
+    .addEdge("__start__", "compaction")
+    .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",
       end: "__end__",
     })
-    .addEdge("tools", "agent");
+    .addEdge("tools", "compaction");
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- checkpoint-saver typings conflict across nested @langchain/langgraph-checkpoint copies
   const app = graph.compile({ checkpointer: checkpointer as any });
