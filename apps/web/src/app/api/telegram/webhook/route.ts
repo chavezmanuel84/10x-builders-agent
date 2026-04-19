@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
 import {
   addMessage,
+  closeActiveSession,
   createServerClient,
+  createSession,
   decrypt,
   getActiveSession,
   getOrCreateSession,
   getRecentPendingContexts,
-  startNewSession,
   updateMessageContextStatus,
 } from "@agents/db";
-import { buildSystemPrompt, resolvePendingContextReply, resumeAgent, runAgent } from "@agents/agent";
+import {
+  buildSystemPrompt,
+  flushSessionMemories,
+  resolvePendingContextReply,
+  resumeAgent,
+  runAgent,
+} from "@agents/agent";
 import type { HitlResumeDecision, UserIntegration, UserToolSetting } from "@agents/types";
 import { sendTelegramMessage as sendTelegramMessageRaw } from "@/lib/telegram";
 
@@ -303,7 +310,21 @@ export async function POST(request: Request) {
   const userId = telegramAccount.user_id;
 
   if (command === "/new") {
-    await startNewSession(db, userId, "telegram");
+    const closedSessionIds = await closeActiveSession(db, userId, "telegram");
+    await createSession(db, userId, "telegram");
+    for (const closedSessionId of closedSessionIds) {
+      void flushSessionMemories({
+        db,
+        userId,
+        sessionId: closedSessionId,
+      }).catch((error) => {
+        console.error("Memory flush failed on Telegram session close", {
+          userId,
+          closedSessionId,
+          error,
+        });
+      });
+    }
     await sendTelegramMessage(chatId, "Nueva sesion iniciada.");
     return NextResponse.json({ ok: true });
   }

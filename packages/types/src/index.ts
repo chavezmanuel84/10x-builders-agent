@@ -73,6 +73,18 @@ export interface AgentMessage {
   created_at: string;
 }
 
+export type MemoryType = "episodic" | "semantic" | "procedural";
+
+export interface MemoryRow {
+  id: string;
+  user_id: string;
+  type: MemoryType;
+  content: string;
+  retrieval_count: number;
+  created_at: string;
+  last_retrieved_at?: string;
+}
+
 export interface ToolCall {
   id: string;
   session_id: string;

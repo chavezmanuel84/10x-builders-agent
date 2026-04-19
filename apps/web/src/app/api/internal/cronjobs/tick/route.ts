@@ -8,7 +8,12 @@ import {
   decrypt,
   updateCronJobAfterRun,
 } from "@agents/db";
-import { buildSystemPrompt, getNextCronRunAt, runAgent } from "@agents/agent";
+import {
+  buildSystemPrompt,
+  flushSessionMemories,
+  getNextCronRunAt,
+  runAgent,
+} from "@agents/agent";
 import type { UserIntegration, UserToolSetting } from "@agents/types";
 import { sendTelegramMessage } from "@/lib/telegram";
 
@@ -173,6 +178,18 @@ async function processTick(request: Request) {
           .from("agent_sessions")
           .update({ status: "closed", updated_at: new Date().toISOString() })
           .eq("id", session.id);
+
+        void flushSessionMemories({
+          db,
+          userId: cronjob.user_id,
+          sessionId: session.id,
+        }).catch((error) => {
+          console.error("Memory flush failed on cronjob session close", {
+            userId: cronjob.user_id,
+            sessionId: session.id,
+            error,
+          });
+        });
       }
 
       const chatId = await findTelegramChatId(db, cronjob.user_id);

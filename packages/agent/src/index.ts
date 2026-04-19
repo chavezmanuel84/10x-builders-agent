@@ -9,6 +9,7 @@ export {
 export { resolvePendingContextReply } from "./pending-context-resolver";
 export { getNextCronRunAt, assertValidTimezone } from "./scheduling";
 export { validateWorkspaceRoot } from "./tools/bash-exec";
+export { flushSessionMemories } from "./memory_flush";
 export type { AgentInput, AgentOutput } from "./graph";
 export type { ToolContext } from "./tools/adapters";
 export type {

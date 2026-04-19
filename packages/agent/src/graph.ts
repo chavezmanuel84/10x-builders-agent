@@ -40,6 +40,7 @@ import {
 import { getLangGraphCheckpointer } from "./checkpointer";
 import { toolRequiresConfirmation } from "./tools/catalog";
 import { createCompactionNode } from "./nodes/compaction_node";
+import { createMemoryInjectionNode } from "./nodes/memory_injection_node";
 
 const GraphState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -62,6 +63,10 @@ const GraphState = Annotation.Root({
   compactionCount: Annotation<number>({
     default: () => 0,
     // Old checkpoints won't have this field; keep previous value when absent.
+    reducer: (prev, next) => (next !== undefined && next !== null ? next : prev),
+  }),
+  memoryInjected: Annotation<boolean>({
+    default: () => false,
     reducer: (prev, next) => (next !== undefined && next !== null ? next : prev),
   }),
 });
@@ -249,6 +254,7 @@ async function compileAgentGraph(
   const lcTools = buildLangChainTools(toolCtx);
   const modelWithTools = lcTools.length > 0 ? model.bindTools(lcTools) : model;
   const compactionNode = createCompactionNode();
+  const memoryInjectionNode = createMemoryInjectionNode(toolCtx.db);
   const toolCallNamesRef = { names: [] as string[] };
 
   async function agentNode(
@@ -404,10 +410,12 @@ async function compileAgentGraph(
   }
 
   const graph = new StateGraph(GraphState)
+    .addNode("memory_injection", memoryInjectionNode)
     .addNode("compaction", compactionNode)
     .addNode("agent", agentNode)
     .addNode("tools", toolExecutorNode)
-    .addEdge("__start__", "compaction")
+    .addEdge("__start__", "memory_injection")
+    .addEdge("memory_injection", "compaction")
     .addEdge("compaction", "agent")
     .addConditionalEdges("agent", shouldContinue, {
       tools: "tools",

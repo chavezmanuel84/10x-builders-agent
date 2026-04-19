@@ -7,4 +7,5 @@ export * from "./queries/integrations";
 export * from "./queries/telegram";
 export * from "./queries/tool-calls";
 export * from "./queries/cronjobs";
+export * from "./queries/memories";
 export { encrypt, decrypt } from "./encryption";
