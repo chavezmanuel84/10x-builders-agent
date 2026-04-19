@@ -169,7 +169,13 @@ export async function flushSessionMemories(input: MemoryFlushInput): Promise<Mem
   const extractionPrompt = buildExtractionPrompt(renderedTranscript);
   const output = await model.invoke([new HumanMessage(extractionPrompt)]);
   const raw = typeof output.content === "string" ? output.content : JSON.stringify(output.content);
-  const extracted = dedupeAndFilter(parseExtractedMemories(raw));
+  let extractedParsed: ExtractedMemory[];
+  try {
+    extractedParsed = parseExtractedMemories(raw);
+  } catch (error) {
+    throw error;
+  }
+  const extracted = dedupeAndFilter(extractedParsed);
 
   if (extracted.length === 0) {
     return { extracted: 0, inserted: 0, skipped: true };

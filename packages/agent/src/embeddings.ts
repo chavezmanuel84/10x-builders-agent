@@ -12,18 +12,24 @@ export async function generateEmbedding(input: string): Promise<number[]> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) throw new Error("Missing OPENROUTER_API_KEY");
 
-  const response = await fetch(OPENROUTER_EMBEDDINGS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://agents.local",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL,
-      input: text,
-    }),
-  });
+  const modelName = process.env.OPENROUTER_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL;
+  let response: Response;
+  try {
+    response = await fetch(OPENROUTER_EMBEDDINGS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://agents.local",
+      },
+      body: JSON.stringify({
+        model: modelName,
+        input: text,
+      }),
+    });
+  } catch (error) {
+    throw error;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

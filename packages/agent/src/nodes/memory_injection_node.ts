@@ -9,6 +9,7 @@ import { generateEmbedding } from "../embeddings";
 
 const DEFAULT_MATCH_COUNT = 6;
 const DEFAULT_MATCH_THRESHOLD = 0.7;
+const DEFAULT_FALLBACK_MATCH_THRESHOLD = 0.35;
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -54,31 +55,52 @@ export function createMemoryInjectionNode(db: DbClient) {
     if (!userInput || !state.userId) return { memoryInjected: true };
 
     try {
+      const matchCount = parsePositiveInt(
+        process.env.MEMORY_INJECTION_TOP_K,
+        DEFAULT_MATCH_COUNT
+      );
+      const matchThreshold = parseThreshold(
+        process.env.MEMORY_INJECTION_THRESHOLD,
+        DEFAULT_MATCH_THRESHOLD
+      );
       const embedding = await generateEmbedding(userInput);
       const memories = await matchMemoriesForInput(db, {
         userId: state.userId,
         embedding,
-        matchCount: parsePositiveInt(process.env.MEMORY_INJECTION_TOP_K, DEFAULT_MATCH_COUNT),
-        matchThreshold: parseThreshold(
-          process.env.MEMORY_INJECTION_THRESHOLD,
-          DEFAULT_MATCH_THRESHOLD
-        ),
+        matchCount,
+        matchThreshold,
       });
 
-      if (memories.length === 0) return { memoryInjected: true };
+      let selectedMemories = memories;
+      if (selectedMemories.length === 0 && matchThreshold > DEFAULT_FALLBACK_MATCH_THRESHOLD) {
+        const fallbackThreshold = parseThreshold(
+          process.env.MEMORY_INJECTION_FALLBACK_THRESHOLD,
+          DEFAULT_FALLBACK_MATCH_THRESHOLD
+        );
+        selectedMemories = await matchMemoriesForInput(db, {
+          userId: state.userId,
+          embedding,
+          matchCount,
+          matchThreshold: fallbackThreshold,
+        });
+      }
 
-      const memoryBlock = formatMemoryBlock(memories);
+      if (selectedMemories.length === 0) {
+        return { memoryInjected: true };
+      }
+
+      const memoryBlock = formatMemoryBlock(selectedMemories);
       const enrichedPrompt = state.systemPrompt
         ? `${state.systemPrompt}\n\n${memoryBlock}`
         : memoryBlock;
 
       void bumpMemoryRetrievalStats(
         db,
-        memories.map((memory) => memory.id)
+        selectedMemories.map((memory) => memory.id)
       ).catch((error) => {
         console.error("Failed to bump memory retrieval stats", {
           userId: state.userId,
-          memoryCount: memories.length,
+          memoryCount: selectedMemories.length,
           error,
         });
       });

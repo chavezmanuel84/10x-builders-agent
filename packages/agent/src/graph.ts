@@ -518,6 +518,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       sessionId,
       userId,
       systemPrompt,
+      memoryInjected: false,
     };
   } else {
     graphInput = {
@@ -528,6 +529,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
       sessionId,
       userId,
       systemPrompt,
+      memoryInjected: false,
     };
   }
 
