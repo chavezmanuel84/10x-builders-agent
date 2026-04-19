@@ -1,5 +1,5 @@
 -- Enable UUID generation
-create extension if not exists "uuid-ossp";
+create extension if not exists pgcrypto;
 
 -- ============================================================
 -- profiles (extends Supabase auth.users)
@@ -48,7 +48,7 @@ create trigger on_auth_user_created
 -- user_integrations (OAuth tokens per provider)
 -- ============================================================
 create table public.user_integrations (
-  id               uuid primary key default uuid_generate_v4(),
+  id               uuid primary key default gen_random_uuid(),
   user_id          uuid not null references public.profiles(id) on delete cascade,
   provider         text not null,
   encrypted_tokens text not null default '',
@@ -68,7 +68,7 @@ create policy "Users can manage own integrations"
 -- user_tool_settings (per-user tool enable/config)
 -- ============================================================
 create table public.user_tool_settings (
-  id          uuid primary key default uuid_generate_v4(),
+  id          uuid primary key default gen_random_uuid(),
   user_id     uuid not null references public.profiles(id) on delete cascade,
   tool_id     text not null,
   enabled     boolean not null default false,
@@ -86,7 +86,7 @@ create policy "Users can manage own tool settings"
 -- agent_sessions
 -- ============================================================
 create table public.agent_sessions (
-  id                  uuid primary key default uuid_generate_v4(),
+  id                  uuid primary key default gen_random_uuid(),
   user_id             uuid not null references public.profiles(id) on delete cascade,
   channel             text not null default 'web' check (channel in ('web', 'telegram')),
   status              text not null default 'active' check (status in ('active', 'closed')),
@@ -106,7 +106,7 @@ create policy "Users can manage own sessions"
 -- agent_messages
 -- ============================================================
 create table public.agent_messages (
-  id                 uuid primary key default uuid_generate_v4(),
+  id                 uuid primary key default gen_random_uuid(),
   session_id         uuid not null references public.agent_sessions(id) on delete cascade,
   role               text not null check (role in ('user', 'assistant', 'tool', 'system')),
   content            text not null default '',
@@ -131,7 +131,7 @@ create policy "Users can manage own messages"
 -- tool_calls
 -- ============================================================
 create table public.tool_calls (
-  id                    uuid primary key default uuid_generate_v4(),
+  id                    uuid primary key default gen_random_uuid(),
   session_id            uuid not null references public.agent_sessions(id) on delete cascade,
   tool_name             text not null,
   arguments_json        jsonb not null default '{}',
@@ -159,7 +159,7 @@ create policy "Users can manage own tool calls"
 -- telegram_accounts
 -- ============================================================
 create table public.telegram_accounts (
-  id               uuid primary key default uuid_generate_v4(),
+  id               uuid primary key default gen_random_uuid(),
   user_id          uuid not null references public.profiles(id) on delete cascade unique,
   telegram_user_id bigint not null unique,
   chat_id          bigint not null,
@@ -176,7 +176,7 @@ create policy "Users can manage own telegram account"
 -- telegram_link_codes (one-time codes for linking)
 -- ============================================================
 create table public.telegram_link_codes (
-  id         uuid primary key default uuid_generate_v4(),
+  id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null references public.profiles(id) on delete cascade,
   code       text not null unique,
   used       boolean not null default false,

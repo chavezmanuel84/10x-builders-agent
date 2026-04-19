@@ -2,7 +2,7 @@
 -- cronjobs (scheduled tasks)
 -- ============================================================
 create table public.cronjobs (
-  id               uuid primary key default uuid_generate_v4(),
+  id               uuid primary key default gen_random_uuid(),
   user_id          uuid not null references public.profiles(id) on delete cascade,
   job_name         text not null,
   description      text not null default '',
@@ -37,7 +37,7 @@ create index cronjobs_due_active_idx
 -- cronjobs_runs (execution audit trail)
 -- ============================================================
 create table public.cronjobs_runs (
-  id                   uuid primary key default uuid_generate_v4(),
+  id                   uuid primary key default gen_random_uuid(),
   cronjob_id           uuid not null references public.cronjobs(id) on delete cascade,
   user_id              uuid not null references public.profiles(id) on delete cascade,
   scheduled_for        timestamptz not null,

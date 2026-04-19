@@ -1,7 +1,7 @@
 create extension if not exists vector;
 
 create table if not exists public.memories (
-  id                uuid primary key default uuid_generate_v4(),
+  id                uuid primary key default gen_random_uuid(),
   user_id           uuid not null references public.profiles(id) on delete cascade,
   type              text not null check (type in ('episodic', 'semantic', 'procedural')),
   content           text not null,
