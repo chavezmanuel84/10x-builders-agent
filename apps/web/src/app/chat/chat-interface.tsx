@@ -128,6 +128,7 @@ export function ChatInterface({
   sessionId,
   initialHasMoreOlder,
 }: Props) {
+  const MAX_TEXTAREA_ROWS = 6;
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
@@ -145,6 +146,8 @@ export function ChatInterface({
     previousHeight: number;
     previousTop: number;
   } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     if (!messages.length) return;
@@ -171,6 +174,24 @@ export function ChatInterface({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     shouldAutoScrollRef.current = false;
   }, [messages]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    const styles = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(styles.lineHeight) || 20;
+    const paddingHeight =
+      Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const borderHeight =
+      Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+    const maxHeight = lineHeight * MAX_TEXTAREA_ROWS + paddingHeight + borderHeight;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [input, MAX_TEXTAREA_ROWS]);
 
   async function handleLoadOlderMessages() {
     if (!activeSessionId || loadingOlder || !hasMoreOlder || messages.length === 0) return;
@@ -217,8 +238,7 @@ export function ChatInterface({
     }
   }
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
+  async function sendMessage() {
     const text = input.trim();
     if (!text || loading) return;
 
@@ -270,6 +290,21 @@ export function ChatInterface({
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSend(e: React.FormEvent) {
+    e.preventDefault();
+    await sendMessage();
+  }
+
+  function handleInputKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    if (composingRef.current || e.nativeEvent.isComposing) return;
+
+    e.preventDefault();
+    if (loading || !input.trim()) return;
+
+    void sendMessage();
   }
 
   async function handleConfirm(action: "approve" | "reject") {
@@ -350,9 +385,9 @@ export function ChatInterface({
   }
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {/* Messages */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-6">
+      <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl space-y-4">
           {activeSessionId && hasMoreOlder && (
             <div className="flex justify-center">
@@ -440,20 +475,27 @@ export function ChatInterface({
       <div className="border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <form
           onSubmit={handleSend}
-          className="mx-auto flex max-w-2xl gap-2"
+          className="mx-auto flex max-w-2xl items-end gap-2"
         >
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleInputKeyDown}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
             placeholder="Escribe tu mensaje..."
-            disabled={loading}
-            className="flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+            rows={1}
+            className="flex-1 self-end rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none dark:border-neutral-700 dark:bg-neutral-900"
           />
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="inline-flex h-9 shrink-0 items-center justify-center self-end rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             Enviar
           </button>
