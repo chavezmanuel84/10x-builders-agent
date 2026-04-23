@@ -36,6 +36,7 @@ import {
   updateToolCallStatus,
   closeActiveContextsByToolCallId,
   getExistingPendingToolCallForSession,
+  getLatestExecutedToolCallForSession,
 } from "@agents/db";
 import { getLangGraphCheckpointer } from "./checkpointer";
 import { toolRequiresConfirmation } from "./tools/catalog";
@@ -119,6 +120,25 @@ interface HitlInterruptValue {
   args: Record<string, unknown>;
   summary: string;
   auditToolCallId: string;
+}
+
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+    return `{${entries
+      .map(([k, v]) => `${JSON.stringify(k)}:${stableJsonStringify(v)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function areToolArgsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  return stableJsonStringify(a) === stableJsonStringify(b);
 }
 
 export function graphStateHasPendingInterrupt(snapshot: StateSnapshot): boolean {
@@ -287,7 +307,30 @@ async function compileAgentGraph(
         // LangGraph re-runs this node from the beginning on resume, which would call
         // createToolCall again and produce a duplicate pending_confirmation row. Reuse
         // the existing pending record for this session+tool if one already exists.
-        const existing = await getExistingPendingToolCallForSession(db, sessionId, tc.name);
+        const existingPendingForTool = await getExistingPendingToolCallForSession(db, sessionId, tc.name);
+        const hasMatchingPendingArgs =
+          existingPendingForTool?.arguments_json &&
+          areToolArgsEqual(
+            existingPendingForTool.arguments_json as Record<string, unknown>,
+            tc.args as Record<string, unknown>
+          );
+        const executedForTool = await getLatestExecutedToolCallForSession(db, sessionId, tc.name);
+        const hasMatchingExecutedArgs =
+          executedForTool?.arguments_json &&
+          areToolArgsEqual(
+            executedForTool.arguments_json as Record<string, unknown>,
+            tc.args as Record<string, unknown>
+          );
+        if (existingPendingForTool && !hasMatchingPendingArgs && hasMatchingExecutedArgs) {
+          results.push(
+            new ToolMessage({
+              content: JSON.stringify((executedForTool?.result_json as Record<string, unknown>) ?? {}),
+              tool_call_id: toolCallId,
+            })
+          );
+          return;
+        }
+        const existing = hasMatchingPendingArgs ? existingPendingForTool : null;
         const record = existing ?? await createToolCall(
           db,
           sessionId,
