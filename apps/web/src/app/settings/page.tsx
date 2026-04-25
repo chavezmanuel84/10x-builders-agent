@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { NavActionButton } from "@/components/ui/nav-action-button";
 import { SettingsForm } from "./settings-form";
 
 export default async function SettingsPage() {
@@ -45,12 +47,9 @@ export default async function SettingsPage() {
       <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <div className="mx-auto flex max-w-2xl items-center justify-between">
           <h1 className="text-lg font-semibold">Ajustes</h1>
-          <a
-            href="/chat"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
+          <NavActionButton as="a" href="/chat" icon={ArrowLeft}>
             Volver al chat
-          </a>
+          </NavActionButton>
         </div>
       </header>
       <main className="mx-auto max-w-2xl px-4 py-8">

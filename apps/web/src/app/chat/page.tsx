@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import { LogOut, Settings } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { NavActionButton } from "@/components/ui/nav-action-button";
 import { ChatInterface } from "./chat-interface";
 
 export default async function ChatPage() {
@@ -59,19 +61,13 @@ export default async function ChatPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <a
-            href="/settings"
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-          >
+          <NavActionButton as="a" href="/settings" icon={Settings}>
             Ajustes
-          </a>
+          </NavActionButton>
           <form action="/api/auth/signout" method="POST">
-            <button
-              type="submit"
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
+            <NavActionButton icon={LogOut} type="submit">
               Salir
-            </button>
+            </NavActionButton>
           </form>
         </div>
       </header>
