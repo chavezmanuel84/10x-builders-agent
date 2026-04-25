@@ -44,7 +44,7 @@ export default async function SettingsPage() {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+      <header className="sticky top-0 z-20 border-b border-neutral-200 bg-white/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/80 dark:border-neutral-800 dark:bg-neutral-950/95 dark:supports-[backdrop-filter]:bg-neutral-950/80">
         <div className="mx-auto flex max-w-2xl items-center justify-between">
           <h1 className="text-lg font-semibold">Ajustes</h1>
           <NavActionButton as="a" href="/chat" icon={ArrowLeft}>
