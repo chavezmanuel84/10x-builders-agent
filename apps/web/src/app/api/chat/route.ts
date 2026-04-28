@@ -4,6 +4,7 @@ import {
   addMessage,
   createServerClient,
   decrypt,
+  ensureSessionTitle,
   getOrCreateSession,
   getRecentPendingContexts,
   updateMessageContextStatus,
@@ -77,6 +78,8 @@ export async function POST(request: Request) {
     if (!session) {
       return NextResponse.json({ error: "Failed to create session" }, { status: 500 });
     }
+
+    await ensureSessionTitle(db, session.id, message);
 
     const pendingContexts = await getRecentPendingContexts(db, session.id);
     const pendingResolution = resolvePendingContextReply(message, session.id, pendingContexts);

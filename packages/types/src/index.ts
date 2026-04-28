@@ -38,6 +38,8 @@ export interface AgentSession {
   status: "active" | "closed";
   budget_tokens_used: number;
   budget_tokens_limit: number;
+  title?: string | null;
+  title_generated: boolean;
   created_at: string;
   updated_at: string;
 }

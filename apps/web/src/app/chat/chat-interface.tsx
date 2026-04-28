@@ -28,6 +28,7 @@ interface Props {
   agentName: string;
   initialMessages: Message[];
   sessionId: string | null;
+  sessionStatus: "active" | "closed" | null;
   initialHasMoreOlder: boolean;
 }
 
@@ -126,15 +127,17 @@ export function ChatInterface({
   agentName,
   initialMessages,
   sessionId,
+  sessionStatus,
   initialHasMoreOlder,
 }: Props) {
   const MAX_TEXTAREA_ROWS = 6;
+  const isReadOnly = sessionStatus === "closed";
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<Confirmation | null>(() =>
-    extractPendingConfirmationFromMessages(initialMessages)
+    isReadOnly ? null : extractPendingConfirmationFromMessages(initialMessages)
   );
   const [confirming, setConfirming] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -239,6 +242,7 @@ export function ChatInterface({
   }
 
   async function sendMessage() {
+    if (isReadOnly) return;
     const text = input.trim();
     if (!text || loading) return;
 
@@ -302,12 +306,13 @@ export function ChatInterface({
     if (composingRef.current || e.nativeEvent.isComposing) return;
 
     e.preventDefault();
-    if (loading || !input.trim()) return;
+    if (loading || !input.trim() || isReadOnly) return;
 
     void sendMessage();
   }
 
   async function handleConfirm(action: "approve" | "reject") {
+    if (isReadOnly) return;
     if (!pendingConfirm || !activeSessionId) return;
     setConfirming(true);
 
@@ -356,34 +361,6 @@ export function ChatInterface({
     }
   }
 
-  async function handleNewChat() {
-    if (loading || confirming) return;
-    setLoading(true);
-    try {
-      const res = await fetch("/api/chat/session/new", {
-        method: "POST",
-      });
-      const data = await res.json();
-      if (!res.ok || typeof data.sessionId !== "string") {
-        throw new Error("No se pudo iniciar una nueva sesion");
-      }
-      setActiveSessionId(data.sessionId);
-      setMessages([]);
-      setPendingConfirm(null);
-      setHasMoreOlder(false);
-      setInput("");
-      shouldAutoScrollRef.current = true;
-    } catch {
-      shouldAutoScrollRef.current = true;
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "No pude crear una nueva sesion. Intenta de nuevo." },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Messages */}
@@ -401,16 +378,6 @@ export function ChatInterface({
               </button>
             </div>
           )}
-          <div className="flex justify-center">
-            <button
-              type="button"
-              onClick={handleNewChat}
-              disabled={loading || confirming}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-            >
-              Nueva sesion
-            </button>
-          </div>
           {messages.length === 0 && (
             <div className="text-center text-sm text-neutral-400 py-20">
               <p className="text-lg font-medium text-neutral-600 dark:text-neutral-300">
@@ -439,7 +406,7 @@ export function ChatInterface({
           ))}
 
           {/* Confirmation buttons */}
-          {pendingConfirm && (
+          {pendingConfirm && !isReadOnly && (
             <div className="flex justify-start">
               <div className="flex gap-2 rounded-lg bg-neutral-100 px-4 py-3 dark:bg-neutral-800">
                 <button
@@ -473,33 +440,39 @@ export function ChatInterface({
 
       {/* Input */}
       <div className="border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
-        <form
-          onSubmit={handleSend}
-          className="mx-auto flex max-w-2xl items-end gap-2"
-        >
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleInputKeyDown}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-            }}
-            placeholder="Escribe tu mensaje..."
-            rows={1}
-            className="flex-1 self-end rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none dark:border-neutral-700 dark:bg-neutral-900"
-          />
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            className="inline-flex h-9 shrink-0 items-center justify-center self-end rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        {isReadOnly ? (
+          <div className="mx-auto max-w-2xl rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-center text-xs text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+            Sesión cerrada — modo solo lectura.
+          </div>
+        ) : (
+          <form
+            onSubmit={handleSend}
+            className="mx-auto flex max-w-2xl items-end gap-2"
           >
-            Enviar
-          </button>
-        </form>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleInputKeyDown}
+              onCompositionStart={() => {
+                composingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                composingRef.current = false;
+              }}
+              placeholder="Escribe tu mensaje..."
+              rows={1}
+              className="flex-1 self-end rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none dark:border-neutral-700 dark:bg-neutral-900"
+            />
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className="inline-flex h-9 shrink-0 items-center justify-center self-end rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              Enviar
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
