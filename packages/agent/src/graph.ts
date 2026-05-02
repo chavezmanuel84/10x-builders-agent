@@ -13,6 +13,7 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
+import { CallbackHandler } from "@langfuse/langchain";
 import type { DbClient } from "@agents/db";
 import type {
   ConversationContextPayload,
@@ -245,6 +246,18 @@ function hitlToPendingConfirmation(v: HitlInterruptValue): PendingConfirmation {
     message: v.summary,
     args: v.args,
   };
+}
+
+function buildLangfuseHandler(
+  userId: string,
+  sessionId: string,
+  tags: string[]
+): CallbackHandler {
+  return new CallbackHandler({
+    sessionId,
+    userId,
+    tags,
+  });
 }
 
 function buildToolContext(
@@ -516,7 +529,11 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     checkpointer
   );
 
-  const config = { configurable: { thread_id: sessionId } };
+  const langfuseHandler = buildLangfuseHandler(userId, sessionId, ["chat"]);
+  const config = {
+    configurable: { thread_id: sessionId },
+    callbacks: [langfuseHandler],
+  };
   const snapshot = await app.getState(config);
 
   // Restore session-level currentDirectory from the checkpoint so the agent
@@ -651,7 +668,11 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
     checkpointer
   );
 
-  const config = { configurable: { thread_id: sessionId } };
+  const langfuseHandler = buildLangfuseHandler(userId, sessionId, ["resume"]);
+  const config = {
+    configurable: { thread_id: sessionId },
+    callbacks: [langfuseHandler],
+  };
   const snapshot = await app.getState(config);
 
   // Restore session-level currentDirectory from the checkpoint so resumed
