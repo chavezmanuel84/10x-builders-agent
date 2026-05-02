@@ -109,3 +109,56 @@ export async function updateSessionTokens(
     .eq("id", sessionId);
   if (error) throw error;
 }
+
+const TITLE_MAX_LENGTH = 60;
+const TITLE_MIN_WORD_BREAK = 40;
+const FALLBACK_TITLE = "Sesión sin nombre";
+
+/**
+ * Generate a short title (no AI) from the first user message: collapse whitespace,
+ * unwrap markdown links to their label, then truncate at a word boundary targeting
+ * 40–60 chars. Empty input falls back to "Sesión sin nombre".
+ */
+export function buildSessionTitle(rawMessage: string): string {
+  if (!rawMessage) return FALLBACK_TITLE;
+  const unwrapped = rawMessage.replace(/\[([^\]]+)\]\([^)\s]+\)/g, "$1");
+  const cleaned = unwrapped.replace(/\s+/g, " ").trim();
+  if (!cleaned) return FALLBACK_TITLE;
+
+  if (cleaned.length <= TITLE_MAX_LENGTH) return cleaned;
+
+  const slice = cleaned.slice(0, TITLE_MAX_LENGTH);
+  const lastSpace = slice.lastIndexOf(" ");
+  const breakAt = lastSpace >= TITLE_MIN_WORD_BREAK ? lastSpace : TITLE_MAX_LENGTH;
+  return `${cleaned.slice(0, breakAt).trimEnd()}…`;
+}
+
+/**
+ * Set agent_sessions.title from the first user message if not already set.
+ * Idempotent: the SQL guard `where title is null` prevents overwriting.
+ */
+export async function ensureSessionTitle(
+  db: DbClient,
+  sessionId: string,
+  firstUserMessage: string
+) {
+  const { data: existing, error: selectError } = await db
+    .from("agent_sessions")
+    .select("title")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (selectError) throw selectError;
+  if (!existing || existing.title !== null) return;
+
+  const title = buildSessionTitle(firstUserMessage);
+  const { error } = await db
+    .from("agent_sessions")
+    .update({
+      title,
+      title_generated: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", sessionId)
+    .is("title", null);
+  if (error) throw error;
+}

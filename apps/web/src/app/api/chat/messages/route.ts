@@ -42,11 +42,10 @@ export async function GET(request: Request) {
 
     const { data: session } = await supabase
       .from("agent_sessions")
-      .select("id")
+      .select("id, status, title")
       .eq("id", sessionId)
       .eq("user_id", user.id)
       .eq("channel", "web")
-      .eq("status", "active")
       .single();
 
     if (!session) {
@@ -78,7 +77,12 @@ export async function GET(request: Request) {
     const hasMoreOlder = rows.length > PAGE_SIZE;
     const messages = rows.slice(0, PAGE_SIZE).reverse();
 
-    return NextResponse.json({ messages, hasMoreOlder });
+    return NextResponse.json({
+      messages,
+      hasMoreOlder,
+      status: session.status,
+      title: session.title,
+    });
   } catch (error) {
     console.error("Messages API error:", error);
     return NextResponse.json(
