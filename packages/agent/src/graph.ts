@@ -14,6 +14,10 @@ import {
 } from "@langchain/core/messages";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
 import { CallbackHandler } from "@langfuse/langchain";
+import {
+  startActiveObservation,
+  propagateAttributes,
+} from "@langfuse/tracing";
 import type { DbClient } from "@agents/db";
 import type {
   ConversationContextPayload,
@@ -248,16 +252,14 @@ function hitlToPendingConfirmation(v: HitlInterruptValue): PendingConfirmation {
   };
 }
 
-function buildLangfuseHandler(
-  userId: string,
-  sessionId: string,
-  tags: string[]
-): CallbackHandler {
-  return new CallbackHandler({
-    sessionId,
-    userId,
-    tags,
-  });
+/**
+ * Builds the Langfuse LangChain callback handler. Trace-level metadata
+ * (sessionId, userId, tags, name, input/output) is set by the surrounding
+ * startActiveObservation/propagateAttributes wrapper so this constructor
+ * intentionally takes no per-request arguments.
+ */
+function buildLangfuseHandler(): CallbackHandler {
+  return new CallbackHandler();
 }
 
 function buildToolContext(
@@ -529,7 +531,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     checkpointer
   );
 
-  const langfuseHandler = buildLangfuseHandler(userId, sessionId, ["chat"]);
+  const langfuseHandler = buildLangfuseHandler();
   const config = {
     configurable: { thread_id: sessionId },
     callbacks: [langfuseHandler],
@@ -545,6 +547,7 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // Calling app.invoke with new input on a paused thread replays toolExecutorNode
   // from the start, creating a duplicate tool_calls row and desynchronising the
   // auditToolCallId stored in the checkpoint from the one shown in the UI.
+  // Skipped path emits no Langfuse trace (no LLM work was done).
   if (graphStateHasPendingInterrupt(snapshot)) {
     const hitl = extractHitlFromStateSnapshot(snapshot);
     const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
@@ -593,46 +596,81 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
     };
   }
 
-  await addMessage(db, sessionId, "user", message);
+  // Wrap the actual graph execution in a Langfuse-managed root observation so:
+  //   - the trace gets a human-readable name ("agent_chat"),
+  //   - trace-level input (user message) and output (assistant reply or
+  //     pending HITL confirmation) populate the Langfuse trace list columns,
+  //   - userId / sessionId / tags propagate to every nested LangChain span.
+  return await startActiveObservation(
+    "agent_chat",
+    async (rootSpan) => {
+      return await propagateAttributes(
+        { userId, sessionId, tags: ["chat"], traceName: "agent_chat" },
+        async () => {
+          const traceInput = { message };
+          rootSpan.update({ input: traceInput });
+          rootSpan.setTraceIO({ input: traceInput });
 
-  const finalState = (await app.invoke(graphInput, config)) as typeof GraphState.State &
-    Record<string, unknown>;
+          await addMessage(db, sessionId, "user", message);
 
-  toolCallNamesRef.names = [...new Set(toolCallNamesRef.names)];
+          const finalState = (await app.invoke(graphInput, config)) as typeof GraphState.State &
+            Record<string, unknown>;
 
-  let hitl = extractHitlInterruptFromInvokeResult(finalState as Record<string, unknown>);
-  if (!hitl) {
-    const postSnap = await app.getState(config);
-    if (graphStateHasPendingInterrupt(postSnap)) {
-      hitl = extractHitlFromStateSnapshot(postSnap);
+          toolCallNamesRef.names = [...new Set(toolCallNamesRef.names)];
+
+          let hitl = extractHitlInterruptFromInvokeResult(
+            finalState as Record<string, unknown>
+          );
+          if (!hitl) {
+            const postSnap = await app.getState(config);
+            if (graphStateHasPendingInterrupt(postSnap)) {
+              hitl = extractHitlFromStateSnapshot(postSnap);
+            }
+          }
+          const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
+
+          const responseText = pendingConfirmation
+            ? pendingConfirmation.message
+            : lastAiText(finalState);
+          const structuredPayload: ConversationContextPayload | undefined =
+            pendingConfirmation
+              ? {
+                  context_type: "pending_confirmation",
+                  context_status: "active",
+                  tool_name: pendingConfirmation.toolName,
+                  pending_field: "confirmation",
+                  tool_call_id: pendingConfirmation.toolCallId,
+                  entity: pendingConfirmation.args,
+                }
+              : detectPendingInputPayload(message, responseText) ?? undefined;
+
+          await addMessage(db, sessionId, "assistant", responseText, {
+            ...(pendingConfirmation
+              ? { tool_call_id: pendingConfirmation.toolCallId }
+              : {}),
+            ...(structuredPayload ? { structured_payload: structuredPayload } : {}),
+          });
+
+          const traceOutput = pendingConfirmation
+            ? {
+                pendingConfirmation: {
+                  toolName: pendingConfirmation.toolName,
+                  message: pendingConfirmation.message,
+                },
+              }
+            : { response: responseText };
+          rootSpan.update({ output: traceOutput });
+          rootSpan.setTraceIO({ output: traceOutput });
+
+          return {
+            response: responseText,
+            toolCalls: toolCallNamesRef.names,
+            pendingConfirmation,
+          };
+        }
+      );
     }
-  }
-  const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
-
-  const responseText = pendingConfirmation
-    ? pendingConfirmation.message
-    : lastAiText(finalState);
-  const structuredPayload: ConversationContextPayload | undefined = pendingConfirmation
-    ? {
-        context_type: "pending_confirmation",
-        context_status: "active",
-        tool_name: pendingConfirmation.toolName,
-        pending_field: "confirmation",
-        tool_call_id: pendingConfirmation.toolCallId,
-        entity: pendingConfirmation.args,
-      }
-    : detectPendingInputPayload(message, responseText) ?? undefined;
-
-  await addMessage(db, sessionId, "assistant", responseText, {
-    ...(pendingConfirmation ? { tool_call_id: pendingConfirmation.toolCallId } : {}),
-    ...(structuredPayload ? { structured_payload: structuredPayload } : {}),
-  });
-
-  return {
-    response: responseText,
-    toolCalls: toolCallNamesRef.names,
-    pendingConfirmation,
-  };
+  );
 }
 
 export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput> {
@@ -668,7 +706,7 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
     checkpointer
   );
 
-  const langfuseHandler = buildLangfuseHandler(userId, sessionId, ["resume"]);
+  const langfuseHandler = buildLangfuseHandler();
   const config = {
     configurable: { thread_id: sessionId },
     callbacks: [langfuseHandler],
@@ -680,6 +718,7 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
   const savedDirectory = (snapshot.values as Partial<typeof GraphState.State>)?.currentDirectory;
   if (savedDirectory) toolCtx.currentDirectory = savedDirectory;
 
+  // No graph work happens on this short-circuit, so no Langfuse trace is emitted.
   if (!graphStateHasPendingInterrupt(snapshot)) {
     return {
       response: "",
@@ -692,60 +731,92 @@ export async function resumeAgent(input: ResumeAgentInput): Promise<AgentOutput>
 
   const auditIdBeforeResume = extractAuditIdFromInterruptSnapshot(snapshot);
 
-  const finalState = (await app.invoke(new Command({ resume: decision }), config)) as typeof GraphState.State &
-    Record<string, unknown>;
+  return await startActiveObservation(
+    "agent_resume",
+    async (rootSpan) => {
+      return await propagateAttributes(
+        { userId, sessionId, tags: ["resume"], traceName: "agent_resume" },
+        async () => {
+          const traceInput = { decision };
+          rootSpan.update({ input: traceInput });
+          rootSpan.setTraceIO({ input: traceInput });
 
-  let hitl = extractHitlInterruptFromInvokeResult(finalState as Record<string, unknown>);
-  if (!hitl) {
-    const postSnap = await app.getState(config);
-    if (graphStateHasPendingInterrupt(postSnap)) {
-      hitl = extractHitlFromStateSnapshot(postSnap);
+          const finalState = (await app.invoke(
+            new Command({ resume: decision }),
+            config
+          )) as typeof GraphState.State & Record<string, unknown>;
+
+          let hitl = extractHitlInterruptFromInvokeResult(
+            finalState as Record<string, unknown>
+          );
+          if (!hitl) {
+            const postSnap = await app.getState(config);
+            if (graphStateHasPendingInterrupt(postSnap)) {
+              hitl = extractHitlFromStateSnapshot(postSnap);
+            }
+          }
+          const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
+          const responseText = pendingConfirmation
+            ? pendingConfirmation.message
+            : lastAiText(finalState);
+
+          if (decision.decision === "reject" && auditIdBeforeResume) {
+            await closeActiveContextsByToolCallId(
+              db,
+              sessionId,
+              auditIdBeforeResume,
+              "rejected"
+            );
+          } else if (decision.decision === "approve" && auditIdBeforeResume) {
+            // Always close the approved context row regardless of whether a new interrupt
+            // followed immediately. The next interrupt creates its own agent_messages row;
+            // leaving the previous one open produces orphaned "active" pending_confirmation
+            // rows that accumulate in the DB across chained approvals.
+            await closeActiveContextsByToolCallId(
+              db,
+              sessionId,
+              auditIdBeforeResume,
+              "executed"
+            );
+          }
+
+          const structuredPayload: ConversationContextPayload | undefined =
+            pendingConfirmation
+              ? {
+                  context_type: "pending_confirmation",
+                  context_status: "active",
+                  tool_name: pendingConfirmation.toolName,
+                  pending_field: "confirmation",
+                  tool_call_id: pendingConfirmation.toolCallId,
+                  entity: pendingConfirmation.args,
+                }
+              : undefined;
+
+          await addMessage(db, sessionId, "assistant", responseText, {
+            ...(pendingConfirmation
+              ? { tool_call_id: pendingConfirmation.toolCallId }
+              : {}),
+            ...(structuredPayload ? { structured_payload: structuredPayload } : {}),
+          });
+
+          const traceOutput = pendingConfirmation
+            ? {
+                pendingConfirmation: {
+                  toolName: pendingConfirmation.toolName,
+                  message: pendingConfirmation.message,
+                },
+              }
+            : { response: responseText };
+          rootSpan.update({ output: traceOutput });
+          rootSpan.setTraceIO({ output: traceOutput });
+
+          return {
+            response: responseText,
+            toolCalls: toolCallNamesRef.names,
+            pendingConfirmation,
+          };
+        }
+      );
     }
-  }
-  const pendingConfirmation = hitl ? hitlToPendingConfirmation(hitl) : null;
-  const responseText = pendingConfirmation
-    ? pendingConfirmation.message
-    : lastAiText(finalState);
-
-  if (decision.decision === "reject" && auditIdBeforeResume) {
-    await closeActiveContextsByToolCallId(
-      db,
-      sessionId,
-      auditIdBeforeResume,
-      "rejected"
-    );
-  } else if (decision.decision === "approve" && auditIdBeforeResume) {
-    // Always close the approved context row regardless of whether a new interrupt
-    // followed immediately. The next interrupt creates its own agent_messages row;
-    // leaving the previous one open produces orphaned "active" pending_confirmation
-    // rows that accumulate in the DB across chained approvals.
-    await closeActiveContextsByToolCallId(
-      db,
-      sessionId,
-      auditIdBeforeResume,
-      "executed"
-    );
-  }
-
-  const structuredPayload: ConversationContextPayload | undefined = pendingConfirmation
-    ? {
-        context_type: "pending_confirmation",
-        context_status: "active",
-        tool_name: pendingConfirmation.toolName,
-        pending_field: "confirmation",
-        tool_call_id: pendingConfirmation.toolCallId,
-        entity: pendingConfirmation.args,
-      }
-    : undefined;
-
-  await addMessage(db, sessionId, "assistant", responseText, {
-    ...(pendingConfirmation ? { tool_call_id: pendingConfirmation.toolCallId } : {}),
-    ...(structuredPayload ? { structured_payload: structuredPayload } : {}),
-  });
-
-  return {
-    response: responseText,
-    toolCalls: toolCallNamesRef.names,
-    pendingConfirmation,
-  };
+  );
 }
